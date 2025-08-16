@@ -1,7 +1,5 @@
 # auxiliary
 
-Here’s a drop-in README section you can paste into your GitHub repo.
-
 ## mundane.py — Nessus findings triage + nmap helper
 
 **Purpose:** make reviewing Nessus plugin “host/port” files fast and less clicky, with one-shot nmap commands and tidy output artifacts.
