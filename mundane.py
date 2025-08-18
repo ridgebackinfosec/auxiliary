@@ -547,7 +547,6 @@ def main():
 
                 # Sort candidates for display
                 if sort_mode == "hosts":
-                    # compute counts for all candidates (cached)
                     display = sorted(
                         candidates,
                         key=lambda p: (-get_counts_for(p)[0], natural_key(p.name))
@@ -645,10 +644,14 @@ def main():
                         warn("No files match the current filter.")
                         continue
                     groups = compare_filtered(candidates)  # returns groups sorted by size DESC
-                    # Immediate group selection (non-persistent; mapping restarts each [H] run)
+                    # Immediate group selection with compact prompt showing only first 5 groups
                     if groups:
-                        opts = " | ".join(f"g{i+1}" for i in range(len(groups)))
-                        choice = input(f"\n[Enter] back | choose {opts} to filter to a group: ").strip().lower()
+                        visible = min(5, len(groups))
+                        opts = " | ".join(f"g{i+1}" for i in range(visible))
+                        ellipsis = " | etc." if len(groups) > visible else ""
+                        choice = input(
+                            f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: "
+                        ).strip().lower()
                         if choice.startswith("g") and choice[1:].isdigit():
                             idx = int(choice[1:]) - 1
                             if 0 <= idx < len(groups):
