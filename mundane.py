@@ -353,7 +353,7 @@ def _normalize_combos(hosts, ports_set, combos_map, had_explicit):
         items = []
         for h in hosts:
             ps = combos_map.get(h, set())
-            items.append((h, tuple(sorted(ps, key=lambda x: int(x)))))  # fixed
+            items.append((h, tuple(sorted(ps, key=lambda x: int(x)))))
         return tuple(items)
     # No explicit combos -> assume all hosts share the global ports_set (possibly empty)
     assumed = tuple(sorted(
@@ -365,10 +365,11 @@ def _normalize_combos(hosts, ports_set, combos_map, had_explicit):
 def compare_filtered(files):
     """
     Print a concise comparison report for the given plugin files.
+    Returns: list[list[str]] groups, sorted by size DESC (each inner list is file names in that group).
     """
     if not files:
         warn("No files selected for comparison.")
-        return
+        return []
 
     header("Filtered Files: Host/Port Comparison")
     info(f"Files compared: {len(files)}")
@@ -416,13 +417,16 @@ def compare_filtered(files):
         info("  ⋃ Ports: " + ", ".join(sorted(port_union, key=lambda x: int(x))))
 
     # Group files by identical combo signature
-    groups = defaultdict(list)
+    groups_dict = defaultdict(list)
     for (f, h, p, c, e), sig in zip(parsed, combo_sigs):
-        groups[sig].append(f.name)
+        groups_dict[sig].append(f.name)
 
-    if len(groups) > 1:
+    # Sort groups by size (desc). Restart numbering from 1 every run.
+    groups_sorted = sorted(groups_dict.values(), key=lambda names: len(names), reverse=True)
+
+    if len(groups_sorted) > 1:
         header("Groups (files with identical host:port combos)")
-        for i, (sig, names) in enumerate(groups.items(), 1):
+        for i, names in enumerate(groups_sorted, 1):
             info(f"[Group {i}] {len(names)} file(s)")
             for nm in names[:6]:
                 info(f"  - {nm}")
@@ -430,6 +434,14 @@ def compare_filtered(files):
                 info(f"  - ... (+{len(names)-6} more)")
     else:
         info("\nAll filtered files fall into a single identical group.")
+
+    # Return groups as list of lists (sorted)
+    return groups_sorted
+
+# -------- Sorting helpers for file list --------
+def natural_key(s: str):
+    """Natural sort key: splits digits for A10 < A2 issues."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
 
 # ============================================================
 
@@ -504,20 +516,68 @@ def main():
             # Per-severity file review
             file_filter = ""
             reviewed_filter = ""
+            group_filter = None  # (group_index:int, names:set[str]) — resets whenever you enter a severity
+            sort_mode = "name"   # "name" or "hosts"
+            file_parse_cache = {}  # Path -> (host_count:int, ports_str:str) for this severity view
+
+            def get_counts_for(path: Path):
+                if path in file_parse_cache:
+                    return file_parse_cache[path]
+                try:
+                    lines = read_text_lines(path)
+                    hosts, ports_str = parse_hosts_ports(lines)
+                    stats = (len(hosts), ports_str)
+                except Exception:
+                    stats = (0, "")
+                file_parse_cache[path] = stats
+                return stats
+
             while True:
                 header(f"Severity: {sev_dir.name}")
                 files = [f for f in list_files(sev_dir) if f.suffix.lower() == ".txt"]
                 reviewed = [f for f in files if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))]
                 unreviewed = [f for f in files if f not in reviewed]
 
-                candidates = [u for u in unreviewed if (file_filter.lower() in u.name.lower())]
+                # Apply substring filter and (optional) group filter
+                candidates = [
+                    u for u in unreviewed
+                    if (file_filter.lower() in u.name.lower())
+                    and (group_filter is None or u.name in group_filter[1])
+                ]
+
+                # Sort candidates for display
+                if sort_mode == "hosts":
+                    # compute counts for all candidates (cached)
+                    display = sorted(
+                        candidates,
+                        key=lambda p: (-get_counts_for(p)[0], natural_key(p.name))
+                    )
+                else:
+                    display = sorted(candidates, key=lambda p: natural_key(p.name))
 
                 # Filtering UI (unreviewed)
                 try:
-                    print(f"Unreviewed files ({len(unreviewed)}). Current filter: '{file_filter or '*'}'")
-                    print(fmt_action(f"[F] Set filter / [C] Clear filter / [R] View reviewed files / [M] Mark ALL filtered as REVIEW_COMPLETE ({len(candidates)}) / [H] Compare hosts/ports in filtered files / [B] Back / [Enter] Open first match"))
-                    for i, f in enumerate(candidates, 1):
-                        print(f"[{i}] {f.name}")
+                    status = f"Unreviewed files ({len(unreviewed)}). Current filter: '{file_filter or '*'}'"
+                    if group_filter:
+                        status += f" | Group filter: #{group_filter[0]} ({len(group_filter[1])})"
+                    status += f" | Sort: {'Host count ↓' if sort_mode=='hosts' else 'Name A→Z'}"
+                    print(status)
+
+                    actions = "[F] Set filter / [C] Clear filter / [R] View reviewed files / "
+                    actions += f"[M] Mark ALL filtered as REVIEW_COMPLETE ({len(candidates)}) / "
+                    actions += "[H] Compare hosts/ports in filtered files / "
+                    actions += "[O] Toggle sort / "
+                    if group_filter:
+                        actions += "[X] Clear group filter / "
+                    actions += "[B] Back / [Enter] Open first match"
+                    print(fmt_action(actions))
+
+                    for i, f in enumerate(display, 1):
+                        if sort_mode == "hosts":
+                            hc, _ps = get_counts_for(f)
+                            print(f"[{i}] {f.name}  — hosts: {hc}")
+                        else:
+                            print(f"[{i}] {f.name}")
                     ans = input("Choose a file number, or action: ").strip().lower()
                 except KeyboardInterrupt:
                     warn("\nInterrupted — returning to severity menu.")
@@ -531,6 +591,14 @@ def main():
                     continue
                 if ans == "c":
                     file_filter = ""
+                    continue
+                if ans == "o":
+                    sort_mode = "hosts" if sort_mode == "name" else "name"
+                    ok(f"Sorting by {'host count (desc)' if sort_mode=='hosts' else 'name (A→Z)'}")
+                    continue
+                if ans == "x" and group_filter:
+                    group_filter = None
+                    ok("Cleared group filter.")
                     continue
                 if ans == "r":
                     # Reviewed viewer
@@ -572,29 +640,37 @@ def main():
                     ok(f"Summary: {renamed} renamed, {len(candidates)-renamed} skipped.")
                     continue
                 if ans == "h":
-                    # Compare hosts/ports across filtered files
+                    # Compare hosts/ports across filtered files (fresh each time; numbering restarts from 1)
                     if not candidates:
                         warn("No files match the current filter.")
                         continue
-                    compare_filtered(candidates)
-                    input("\nPress Enter to return to the file list...")
+                    groups = compare_filtered(candidates)  # returns groups sorted by size DESC
+                    # Immediate group selection (non-persistent; mapping restarts each [H] run)
+                    if groups:
+                        opts = " | ".join(f"g{i+1}" for i in range(len(groups)))
+                        choice = input(f"\n[Enter] back | choose {opts} to filter to a group: ").strip().lower()
+                        if choice.startswith("g") and choice[1:].isdigit():
+                            idx = int(choice[1:]) - 1
+                            if 0 <= idx < len(groups):
+                                group_filter = (idx + 1, set(groups[idx]))
+                                ok(f"Applied group filter #{idx+1} ({len(groups[idx])} files).")
                     continue
 
                 # Default-select top item on Enter
                 if ans == "":
-                    if not candidates:
+                    if not display:
                         warn("No files match the current filter.")
                         continue
-                    chosen = candidates[0]
+                    chosen = display[0]
                 else:
                     if not ans.isdigit():
                         warn("Please select a file by number, or use actions above.")
                         continue
                     idx = int(ans) - 1
-                    if idx < 0 or idx >= len(candidates):
+                    if idx < 0 or idx >= len(display):
                         warn("Invalid index.")
                         continue
-                    chosen = candidates[idx]
+                    chosen = display[idx]
 
                 # Per-file workflow
                 lines = read_text_lines(chosen)
@@ -779,4 +855,3 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         warn("\nInterrupted — goodbye.")
-
