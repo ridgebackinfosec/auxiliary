@@ -35,6 +35,8 @@ No external Python deps. Uses only stdlib + `nmap` on your PATH.
    * **SNMP**/**IPMI** profiles auto-switch to **UDP**
 5. Review the generated command, **Run** or **Copy**, and optionally mark the file as reviewed
 
+![mundane-demo](https://github.com/user-attachments/assets/f1bb7835-70cb-4efe-a8a6-1938255445db)
+
 ### Keys you’ll use
 
 * **\[F]** Set substring filter  **\[C]** Clear filter
