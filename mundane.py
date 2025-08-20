@@ -208,7 +208,7 @@ def build_netexec_cmd(exec_bin: str, protocol: str, ips_file: Path, oabase: Path
     cmd = [exec_bin, protocol, "-iL", str(ips_file), "--log", log_path]
     if protocol == "smb":
         cmd += ["--shares"]
-    return cmd
+    return cmd, log_path
 
 def copy_to_clipboard(s: str) -> tuple:
     """Best-effort cross-platform clipboard.
@@ -235,10 +235,10 @@ def copy_to_clipboard(s: str) -> tuple:
         return False, f'Clipboard error: {e}'
     return False, 'No suitable clipboard tool found.'
 
-def command_review_menu(cmd_list):
+def command_review_menu(cmd_list_or_str):
     """Display a small menu: run / copy / cancel."""
     header("Command Review")
-    cmd_str = " ".join(cmd_list)
+    cmd_str = cmd_list_or_str if isinstance(cmd_list_or_str, str) else " ".join(cmd_list_or_str)
     print(cmd_str)
     print()
     print(fmt_action("[1] Run now"))
@@ -407,7 +407,7 @@ def compare_filtered(files):
     port_intersection = set.intersection(*all_port_sets) if all_port_sets else set()
     port_union        = set.union(*all_port_sets) if all_port_sets else set()
 
-    # Canonical signatures (host-only, ports-only, and combos)
+    # Canonical signatures
     host_sigs  = [tuple(sorted(h)) for _, h, _, _, _ in parsed]
     port_sigs  = [tuple(sorted(p, key=lambda x: int(x))) for _, _, p, _, _ in parsed]
     combo_sigs = [_normalize_combos(h, p, c, e) for _, h, p, c, e in parsed]
@@ -486,12 +486,6 @@ def _is_valid_token(tok: str) -> tuple[bool, str | None, str | None]:
     """
     Validate a token as host or host:port.
     Returns (valid, host, port_or_None). Port is a string if present.
-    Valid forms:
-      - hostname
-      - IPv4
-      - IPv6 (bare)
-      - [IPv6]
-      - hostname:port / IPv4:port / [IPv6]:port
     """
     tok = tok.strip()
     if not tok:
@@ -588,7 +582,6 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
         if not hosts:
             empties += 1
         unique_hosts.update(hosts)
-        # Track IP versions (hostnames are ignored for v4/v6 split)
         for h in hosts:
             try:
                 ip = ipaddress.ip_address(h)
@@ -598,31 +591,22 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
                     ipv6_set.add(h)
             except Exception:
                 pass
-        # per-file port prevalence
         for p in ports:
             ports_counter[p] += 1
-        # identical host:port cluster signature
         sig = _normalize_combos(hosts, ports, combos, had_explicit)
         combo_sig_counter[sig] += 1
 
-    # Folder health
     info(f"Files: {total_files}  |  Reviewed: {reviewed_files}  |  Empty: {empties}  |  Malformed tokens: {malformed_total}")
-
-    # Host coverage
     info(f"Hosts: unique={len(unique_hosts)}  (IPv4: {len(ipv4_set)} | IPv6: {len(ipv6_set)})")
     if unique_hosts:
         sample = ", ".join(list(sorted(unique_hosts))[:5])
         info(f"  Example: {sample}{' ...' if len(unique_hosts) > 5 else ''}")
-
-    # Port landscape
     port_set = set(ports_counter.keys())
     info(f"Ports: unique={len(port_set)}")
     if ports_counter:
         top_ports = ports_counter.most_common(top_ports_n)
         tp_str = ", ".join(f"{p} ({n} files)" for p, n in top_ports)
         info(f"  Top {top_ports_n}: {tp_str}")
-
-    # Duplicate/cluster insight
     multi_clusters = [c for c in combo_sig_counter.values() if c > 1]
     info(f"Identical host:port groups across all files: {len(multi_clusters)}")
     if multi_clusters:
@@ -634,6 +618,7 @@ def choose_tool():
     header("Choose a tool")
     print("[1] nmap")
     print("[2] netexec — multi-protocol")
+    print("[3] Custom command (advanced)")
     print(fmt_action("[B] Back"))
     while True:
         try:
@@ -642,11 +627,12 @@ def choose_tool():
             warn("\nInterrupted — returning to file menu.")
             return None
         if ans in ("b", "back", ""):
-            return None if ans else "nmap"  # default to nmap on Enter
+            return None if ans else "nmap"  # Enter defaults to nmap
         if ans.isdigit():
             i = int(ans)
             if i == 1: return "nmap"
             if i == 2: return "netexec"
+            if i == 3: return "custom"
         warn("Invalid choice.")
 
 NETEXEC_PROTOCOLS = ["mssql","smb","ftp","ldap","nfs","rdp","ssh","vnc","winrm","wmi"]
@@ -674,6 +660,23 @@ def choose_netexec_protocol():
         if ans in NETEXEC_PROTOCOLS:
             return ans
         warn("Invalid choice.")
+
+def custom_command_help(mapping: dict):
+    header("Custom command")
+    info("You can type any shell command. The placeholders below will be expanded:")
+    for k, v in mapping.items():
+        info(f"  {k:14s} -> {v}")
+    print()
+    info("Examples:")
+    info("  httpx -l {TCP_IPS} -silent -o {OABASE}.urls.txt")
+    info("  nuclei -l {OABASE}.urls.txt -o {OABASE}.nuclei.txt")
+    info("  cat {TCP_IPS} | xargs -I{} sh -c 'echo {}; nmap -Pn -p {PORTS} {}'")
+
+def render_placeholders(template: str, mapping: dict) -> str:
+    s = template
+    for k, v in mapping.items():
+        s = s.replace(k, str(v))
+    return s
 
 # ============================================================
 
@@ -874,12 +877,11 @@ def main():
                     ok(f"Summary: {renamed} renamed, {len(candidates)-renamed} skipped.")
                     continue
                 if ans == "h":
-                    # Compare hosts/ports across filtered files (fresh each time; numbering restarts from 1)
+                    # Compare hosts/ports across filtered files
                     if not candidates:
                         warn("No files match the current filter.")
                         continue
-                    groups = compare_filtered(candidates)  # returns groups sorted by size DESC
-                    # Immediate group selection with compact prompt showing only first 5 groups
+                    groups = compare_filtered(candidates)
                     if groups:
                         visible = min(5, len(groups))
                         opts = " | ".join(f"g{i+1}" for i in range(visible))
@@ -974,118 +976,153 @@ def main():
                             ok(f"Sampling {k} host(s).")
                             break
 
-                # Choose tool
-                tool_choice = choose_tool()
-                if tool_choice is None:
-                    # Back or Enter without choice returned None; go back to file menu
-                    continue
-
-                # Results paths (-oA base or log base)
-                results_dir, oabase = build_results_paths(scan_dir, sev_dir, chosen.name)
-                info(f"\nOutput directory will be:\n{results_dir}\n")
-
-                # Write working lists
+                # --- Prepare per-file context ONCE (persists across multiple commands) ---
                 workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
+                # Write both TCP and UDP lists so any tool/custom can reference them
+                tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
 
-                if tool_choice == "nmap":
-                    # Nmap-specific options
-                    try:
-                        udp_ports = yesno("\nDo you want to perform UDP scanning instead of TCP? (y/N):", default="n")
-                    except KeyboardInterrupt:
-                        continue
+                # results base dir stays the same; each run gets a fresh timestamped oabase
+                # (build_results_paths is called each run, but out_dir path is constant)
+                out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir.name) / Path(chosen.name).stem
+                out_dir_static.mkdir(parents=True, exist_ok=True)
 
-                    try:
-                        nse_scripts, needs_udp = choose_nse_profile()
-                    except KeyboardInterrupt:
-                        continue
+                # ----- Tool loop: allow running multiple commands in the same context -----
+                while True:
+                    tool_choice = choose_tool()
+                    if tool_choice is None:
+                        break  # back to file menu
 
-                    try:
-                        extra = input("Enter additional NSE scripts (comma-separated, no spaces, or Enter to skip): ").strip()
-                    except KeyboardInterrupt:
-                        continue
-                    if extra:
-                        for s in extra.split(","):
-                            s = s.strip()
-                            if s and s not in nse_scripts:
-                                nse_scripts.append(s)
+                    # Fresh timestamped oabase per run
+                    _tmp_dir, oabase = build_results_paths(scan_dir, sev_dir, chosen.name)
+                    results_dir = out_dir_static  # for clearer prints
 
-                    extras_imply_udp = any(s.lower().startswith("snmp") or s.lower() == "ipmi-version" for s in nse_scripts)
-                    if needs_udp or extras_imply_udp:
-                        if not udp_ports:
-                            warn("SNMP/IPMI selected — switching to UDP scan.")
-                        udp_ports = True
+                    if tool_choice == "nmap":
+                        # Nmap-specific options
+                        try:
+                            udp_ports = yesno("\nDo you want to perform UDP scanning instead of TCP? (y/N):", default="n")
+                        except KeyboardInterrupt:
+                            break
 
-                    if nse_scripts:
-                        info(f"{C.BOLD}NSE scripts to run:{C.RESET} {','.join(nse_scripts)}")
-                    nse_option = f"--script={','.join(nse_scripts)}" if nse_scripts else ""
+                        try:
+                            nse_scripts, needs_udp = choose_nse_profile()
+                        except KeyboardInterrupt:
+                            break
 
-                    tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=udp_ports)
-                    ips_file = udp_ips if udp_ports else tcp_ips
+                        try:
+                            extra = input("Enter additional NSE scripts (comma-separated, no spaces, or Enter to skip): ").strip()
+                        except KeyboardInterrupt:
+                            break
+                        if extra:
+                            for s in extra.split(","):
+                                s = s.strip()
+                                if s and s not in nse_scripts:
+                                    nse_scripts.append(s)
 
-                    # Check tool availability & build command
-                    require_cmd("nmap")
-                    cmd = build_nmap_cmd(udp_ports, nse_option, ips_file, ports_str, use_sudo, oabase)
+                        extras_imply_udp = any(s.lower().startswith("snmp") or s.lower() == "ipmi-version" for s in nse_scripts)
+                        if needs_udp or extras_imply_udp:
+                            if not udp_ports:
+                                warn("SNMP/IPMI selected — switching to UDP scan.")
+                            udp_ports = True
 
-                elif tool_choice == "netexec":
-                    # NetExec protocol selection
-                    protocol = choose_netexec_protocol()
-                    if not protocol:
-                        continue  # back to file menu
+                        if nse_scripts:
+                            info(f"{C.BOLD}NSE scripts to run:{C.RESET} {','.join(nse_scripts)}")
+                        nse_option = f"--script={','.join(nse_scripts)}" if nse_scripts else ""
 
-                    # Targets for NetExec: use TCP list
-                    tcp_ips, _udp_ips, _tcp_sockets = write_work_files(workdir, sample_hosts, ports_str="", udp=False)
-                    ips_file = tcp_ips
+                        ips_file = udp_ips if udp_ports else tcp_ips
+                        require_cmd("nmap")
+                        cmd = build_nmap_cmd(udp_ports, nse_option, ips_file, ports_str, use_sudo, oabase)
+                        display_cmd = cmd
+                        artifact_note = f"Results base:  {oabase}  (nmap -oA)"
 
-                    # Prefer 'nxc', fallback to 'netexec'
-                    exec_bin = resolve_cmd(["nxc", "netexec"])
-                    if not exec_bin:
-                        warn("Neither 'nxc' nor 'netexec' was found in PATH.")
-                        info("Skipping run; returning to file menu.")
-                        continue
-                    cmd = build_netexec_cmd(exec_bin, protocol, ips_file, oabase)
+                    elif tool_choice == "netexec":
+                        protocol = choose_netexec_protocol()
+                        if not protocol:
+                            continue
+                        ips_file = tcp_ips
+                        exec_bin = resolve_cmd(["nxc", "netexec"])
+                        if not exec_bin:
+                            warn("Neither 'nxc' nor 'netexec' was found in PATH.")
+                            info("Skipping run; returning to tool menu.")
+                            continue
+                        cmd, nxc_log = build_netexec_cmd(exec_bin, protocol, ips_file, oabase)
+                        display_cmd = cmd
+                        artifact_note = f"NetExec log:   {nxc_log}"
 
-                else:
-                    warn("Unknown tool selection.")
-                    continue
+                    elif tool_choice == "custom":
+                        # Custom command with placeholders
+                        mapping = {
+                            "{TCP_IPS}": tcp_ips,
+                            "{UDP_IPS}": udp_ips,
+                            "{TCP_HOST_PORTS}": tcp_sockets,
+                            "{PORTS}": ports_str or "",
+                            "{WORKDIR}": workdir,
+                            "{RESULTS_DIR}": results_dir,
+                            "{OABASE}": oabase,
+                        }
+                        custom_command_help(mapping)
+                        try:
+                            template = input("\nEnter your command (placeholders allowed): ").strip()
+                        except KeyboardInterrupt:
+                            break
+                        if not template:
+                            warn("No command entered.")
+                            continue
+                        rendered = render_placeholders(template, mapping)
+                        display_cmd = rendered
+                        cmd = rendered  # string
+                        artifact_note = f"OABASE path:   {oabase}"
 
-                # Command review
-                action = command_review_menu(cmd)
-
-                if action == "copy":
-                    cmd_str = " ".join(cmd)
-                    if copy_to_clipboard(cmd_str)[0]:
-                        ok("Command copied to clipboard.")
                     else:
-                        warn("Could not copy to clipboard automatically. Here it is to copy manually:")
-                        print(cmd_str)
-                elif action == "run":
+                        warn("Unknown tool selection.")
+                        continue
+
+                    # Command review
+                    action = command_review_menu(display_cmd)
+
+                    if action == "copy":
+                        cmd_str = display_cmd if isinstance(display_cmd, str) else " ".join(display_cmd)
+                        if copy_to_clipboard(cmd_str)[0]:
+                            ok("Command copied to clipboard.")
+                        else:
+                            warn("Could not copy to clipboard automatically. Here it is to copy manually:")
+                            print(cmd_str)
+                    elif action == "run":
+                        try:
+                            if isinstance(cmd, list):
+                                subprocess.run(cmd, check=True)
+                            else:
+                                # custom string command
+                                shell_exec = shutil.which("bash") or shutil.which("sh")
+                                subprocess.run(cmd, shell=True, check=True, executable=shell_exec)
+                        except KeyboardInterrupt:
+                            warn("\nRun interrupted — returning to tool menu.")
+                            continue
+                        except subprocess.CalledProcessError as e:
+                            err(f"Command exited with {e.returncode}.")
+                            info("Returning to tool menu.")
+                            continue
+                    elif action == "cancel":
+                        info("Canceled. Returning to tool menu.")
+                        continue
+
+                    # Artifacts for this run
+                    header("Artifacts")
+                    info(f"Workspace:     {workdir}")
+                    info(f" - Hosts:      {workdir / 'tcp_ips.list'}")
+                    if ports_str:
+                        info(f" - Host:Ports: {workdir / 'tcp_host_ports.list'}")
+                    info(f" - {artifact_note}")
+                    info(f" - Results dir:{results_dir}")
+
+                    # Run another command in this same context?
                     try:
-                        subprocess.run(cmd, check=True)
+                        again = yesno("\nRun another command for this plugin file? (y/N):", default="n")
                     except KeyboardInterrupt:
-                        warn("\nRun interrupted — returning to file menu.")
-                        continue
-                    except subprocess.CalledProcessError as e:
-                        err(f"Command exited with {e.returncode}.")
-                        info("Returning to file menu.")
-                        continue
-                elif action == "cancel":
-                    info("Canceled. Returning to file menu.")
-                    continue
+                        break
+                    if not again:
+                        break  # exit tool loop
 
-                # Artifacts
-                header("Artifacts")
-                info(f"Workspace: {workdir}")
-                info(f" - Hosts:         {workdir / 'tcp_ips.list'}")
-                if tool_choice == "nmap" and ports_str:
-                    info(f" - Host:Ports:    {workdir / 'tcp_host_ports.list'}")
-                if tool_choice == "nmap":
-                    info(f" - Results base:  {oabase}  (nmap -oA)")
-                elif tool_choice == "netexec":
-                    # We don't know the protocol here for the printout; show the pattern:
-                    info(f" - NetExec log:   {str(oabase)}.nxc.<protocol>.log")
-                info(f" - Results dir:   {results_dir}")
-
-                # Rename?
+                # After leaving tool loop, optional rename
                 try:
                     if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
                         newp = rename_review_complete(chosen)
