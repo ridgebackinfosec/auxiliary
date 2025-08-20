@@ -443,7 +443,7 @@ def natural_key(s: str):
     """Natural sort key: splits digits for A10 < A2 issues."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
 
-# ====== Scan overview helpers (NEW) ======
+# ====== Scan overview helpers ======
 _HNAME_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
 
 def _is_hostname(s: str) -> bool:
@@ -543,7 +543,7 @@ def _count_reviewed_in_scan(scan_dir: Path):
         reviewed_files += len(reviewed)
     return total_files, reviewed_files
 
-def show_scan_summary(scan_dir: Path, top_ports_n: int = 10):
+def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
     """Compute and print scan-level overview (shown right after choosing a scan)."""
     header(f"Scan Overview — {scan_dir.name}")
 
@@ -651,7 +651,7 @@ def main():
             continue
         scan_dir = scans[int(ans)-1]
 
-        # --- NEW: show scan overview immediately after selecting scan ---
+        # --- show scan overview immediately after selecting scan ---
         show_scan_summary(scan_dir)
 
         # Severity loop
@@ -703,7 +703,8 @@ def main():
                 return stats
 
             while True:
-                header(f"Severity: {sev_dir.name}")
+                # ---- Severity header uses pretty label (no numeric prefix) ----
+                header(f"Severity: {pretty_severity_label(sev_dir.name)}")
                 files = [f for f in list_files(sev_dir) if f.suffix.lower() == ".txt"]
                 reviewed = [f for f in files if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))]
                 unreviewed = [f for f in files if f not in reviewed]
