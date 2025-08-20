@@ -30,6 +30,13 @@ def require_cmd(name):
         err(f"Required command '{name}' not found on PATH.")
         sys.exit(1)
 
+def resolve_cmd(candidates):
+    """Return the first available binary from candidates, or None."""
+    for c in candidates:
+        if shutil.which(c):
+            return c
+    return None
+
 def root_or_sudo_available() -> bool:
     try:
         if os.name != "nt" and os.geteuid() == 0:
@@ -189,6 +196,18 @@ def build_nmap_cmd(udp, nse_option, ips_file, ports_str, use_sudo, oabase: Path)
         cmd += ["-p", ports_str]
     # Always write results
     cmd += ["-oA", str(oabase)]
+    return cmd
+
+def build_netexec_cmd(exec_bin: str, protocol: str, ips_file: Path, oabase: Path):
+    """
+    Minimal, safe default:
+      nxc <protocol> -iL <ips_file> --log <oabase>.nxc.<protocol>.log
+    For SMB we keep '--shares' as before.
+    """
+    log_path = f"{str(oabase)}.nxc.{protocol}.log"
+    cmd = [exec_bin, protocol, "-iL", str(ips_file), "--log", log_path]
+    if protocol == "smb":
+        cmd += ["--shares"]
     return cmd
 
 def copy_to_clipboard(s: str) -> tuple:
@@ -610,10 +629,56 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
         sizes = sorted(multi_clusters, reverse=True)[:3]
         info("  Largest clusters: " + ", ".join(f"{n} files" for n in sizes))
 
+# ========== Tool selection ==========
+def choose_tool():
+    header("Choose a tool")
+    print("[1] nmap")
+    print("[2] netexec — multi-protocol")
+    print(fmt_action("[B] Back"))
+    while True:
+        try:
+            ans = input("Choose: ").strip().lower()
+        except KeyboardInterrupt:
+            warn("\nInterrupted — returning to file menu.")
+            return None
+        if ans in ("b", "back", ""):
+            return None if ans else "nmap"  # default to nmap on Enter
+        if ans.isdigit():
+            i = int(ans)
+            if i == 1: return "nmap"
+            if i == 2: return "netexec"
+        warn("Invalid choice.")
+
+NETEXEC_PROTOCOLS = ["mssql","smb","ftp","ldap","nfs","rdp","ssh","vnc","winrm","wmi"]
+
+def choose_netexec_protocol():
+    header("NetExec: choose protocol")
+    for i, p in enumerate(NETEXEC_PROTOCOLS, 1):
+        print(f"[{i}] {p}")
+    print(fmt_action("[B] Back"))
+    print("(Press Enter for 'smb')")
+    while True:
+        try:
+            ans = input("Choose protocol: ").strip().lower()
+        except KeyboardInterrupt:
+            warn("\nInterrupted — returning to file menu.")
+            return None
+        if ans == "":
+            return "smb"
+        if ans in ("b","back"):
+            return None
+        if ans.isdigit():
+            idx = int(ans)
+            if 1 <= idx <= len(NETEXEC_PROTOCOLS):
+                return NETEXEC_PROTOCOLS[idx-1]
+        if ans in NETEXEC_PROTOCOLS:
+            return ans
+        warn("Invalid choice.")
+
 # ============================================================
 
 def main():
-    require_cmd("nmap")
+    # No hard require for nmap here — check per selected tool instead.
     use_sudo = root_or_sudo_available()
     if not use_sudo:
         warn("Not running as root and no 'sudo' found — some scan types (e.g., UDP) may fail.")
@@ -703,7 +768,6 @@ def main():
                 return stats
 
             while True:
-                # ---- Severity header uses pretty label (no numeric prefix) ----
                 header(f"Severity: {pretty_severity_label(sev_dir.name)}")
                 files = [f for f in list_files(sev_dir) if f.suffix.lower() == ".txt"]
                 reviewed = [f for f in files if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))]
@@ -871,9 +935,9 @@ def main():
                 except KeyboardInterrupt:
                     continue
 
-                # Run nmap?
+                # Run a tool?
                 try:
-                    do_scan = yesno("\nRun nmap now? (y/N):", default="n")
+                    do_scan = yesno("\nRun a tool now? (y/N):", default="n")
                 except KeyboardInterrupt:
                     continue
 
@@ -888,8 +952,7 @@ def main():
                         continue
                     continue
 
-                # If scanning
-                # Sampling
+                # Sampling (applies to any tool)
                 sample_hosts = hosts
                 if len(hosts) > 5:
                     try:
@@ -911,51 +974,79 @@ def main():
                             ok(f"Sampling {k} host(s).")
                             break
 
-                # UDP or TCP (initial choice)
-                try:
-                    udp_ports = yesno("\nDo you want to perform UDP scanning instead of TCP? (y/N):", default="n")
-                except KeyboardInterrupt:
+                # Choose tool
+                tool_choice = choose_tool()
+                if tool_choice is None:
+                    # Back or Enter without choice returned None; go back to file menu
                     continue
 
-                # NSE profile (single selection)
-                try:
-                    nse_scripts, needs_udp = choose_nse_profile()
-                except KeyboardInterrupt:
-                    continue
-
-                # Extra NSE
-                try:
-                    extra = input("Enter additional NSE scripts (comma-separated, no spaces, or Enter to skip): ").strip()
-                except KeyboardInterrupt:
-                    continue
-                if extra:
-                    for s in extra.split(","):
-                        s = s.strip()
-                        if s and s not in nse_scripts:
-                            nse_scripts.append(s)
-
-                # If SNMP/IPMI profile (or extras imply it), force UDP
-                extras_imply_udp = any(s.lower().startswith("snmp") or s.lower() == "ipmi-version" for s in nse_scripts)
-                if needs_udp or extras_imply_udp:
-                    if not udp_ports:
-                        warn("SNMP/IPMI selected — switching to UDP scan.")
-                    udp_ports = True
-
-                if nse_scripts:
-                    info(f"{C.BOLD}NSE scripts to run:{C.RESET} {','.join(nse_scripts)}")
-                nse_option = f"--script={','.join(nse_scripts)}" if nse_scripts else ""
-
-                # Write working lists
-                workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
-                tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=udp_ports)
-                ips_file = udp_ips if udp_ports else tcp_ips
-
-                # Results paths (-oA)
+                # Results paths (-oA base or log base)
                 results_dir, oabase = build_results_paths(scan_dir, sev_dir, chosen.name)
                 info(f"\nOutput directory will be:\n{results_dir}\n")
 
-                # Build command
-                cmd = build_nmap_cmd(udp_ports, nse_option, ips_file, ports_str, use_sudo, oabase)
+                # Write working lists
+                workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
+
+                if tool_choice == "nmap":
+                    # Nmap-specific options
+                    try:
+                        udp_ports = yesno("\nDo you want to perform UDP scanning instead of TCP? (y/N):", default="n")
+                    except KeyboardInterrupt:
+                        continue
+
+                    try:
+                        nse_scripts, needs_udp = choose_nse_profile()
+                    except KeyboardInterrupt:
+                        continue
+
+                    try:
+                        extra = input("Enter additional NSE scripts (comma-separated, no spaces, or Enter to skip): ").strip()
+                    except KeyboardInterrupt:
+                        continue
+                    if extra:
+                        for s in extra.split(","):
+                            s = s.strip()
+                            if s and s not in nse_scripts:
+                                nse_scripts.append(s)
+
+                    extras_imply_udp = any(s.lower().startswith("snmp") or s.lower() == "ipmi-version" for s in nse_scripts)
+                    if needs_udp or extras_imply_udp:
+                        if not udp_ports:
+                            warn("SNMP/IPMI selected — switching to UDP scan.")
+                        udp_ports = True
+
+                    if nse_scripts:
+                        info(f"{C.BOLD}NSE scripts to run:{C.RESET} {','.join(nse_scripts)}")
+                    nse_option = f"--script={','.join(nse_scripts)}" if nse_scripts else ""
+
+                    tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=udp_ports)
+                    ips_file = udp_ips if udp_ports else tcp_ips
+
+                    # Check tool availability & build command
+                    require_cmd("nmap")
+                    cmd = build_nmap_cmd(udp_ports, nse_option, ips_file, ports_str, use_sudo, oabase)
+
+                elif tool_choice == "netexec":
+                    # NetExec protocol selection
+                    protocol = choose_netexec_protocol()
+                    if not protocol:
+                        continue  # back to file menu
+
+                    # Targets for NetExec: use TCP list
+                    tcp_ips, _udp_ips, _tcp_sockets = write_work_files(workdir, sample_hosts, ports_str="", udp=False)
+                    ips_file = tcp_ips
+
+                    # Prefer 'nxc', fallback to 'netexec'
+                    exec_bin = resolve_cmd(["nxc", "netexec"])
+                    if not exec_bin:
+                        warn("Neither 'nxc' nor 'netexec' was found in PATH.")
+                        info("Skipping run; returning to file menu.")
+                        continue
+                    cmd = build_netexec_cmd(exec_bin, protocol, ips_file, oabase)
+
+                else:
+                    warn("Unknown tool selection.")
+                    continue
 
                 # Command review
                 action = command_review_menu(cmd)
@@ -971,10 +1062,10 @@ def main():
                     try:
                         subprocess.run(cmd, check=True)
                     except KeyboardInterrupt:
-                        warn("\nScan interrupted — returning to file menu.")
+                        warn("\nRun interrupted — returning to file menu.")
                         continue
                     except subprocess.CalledProcessError as e:
-                        err(f"nmap exited with {e.returncode}.")
+                        err(f"Command exited with {e.returncode}.")
                         info("Returning to file menu.")
                         continue
                 elif action == "cancel":
@@ -984,19 +1075,15 @@ def main():
                 # Artifacts
                 header("Artifacts")
                 info(f"Workspace: {workdir}")
-                info(f" - Hosts:         {tcp_ips}")
-                if ports_str:
-                    info(f" - Host:Ports:    {tcp_sockets}")
-                if udp_ports:
-                    info(f" - UDP hosts:     {udp_ips}")
-                info(f" - Results:       {results_dir}")
-
-                # Option to show plugin file again
-                try:
-                    if yesno("\nWould you like to view the contents of the selected plugin file? (y/N):", default="n"):
-                        safe_print_file(chosen)
-                except KeyboardInterrupt:
-                    continue
+                info(f" - Hosts:         {workdir / 'tcp_ips.list'}")
+                if tool_choice == "nmap" and ports_str:
+                    info(f" - Host:Ports:    {workdir / 'tcp_host_ports.list'}")
+                if tool_choice == "nmap":
+                    info(f" - Results base:  {oabase}  (nmap -oA)")
+                elif tool_choice == "netexec":
+                    # We don't know the protocol here for the printout; show the pattern:
+                    info(f" - NetExec log:   {str(oabase)}.nxc.<protocol>.log")
+                info(f" - Results dir:   {results_dir}")
 
                 # Rename?
                 try:
