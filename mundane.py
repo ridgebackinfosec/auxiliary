@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # mundane.py
-import sys, os, re, random, shutil, tempfile, subprocess
+import sys, os, re, random, shutil, tempfile, subprocess, ipaddress
 from pathlib import Path
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 # ========== Colors & helpers ==========
 NO_COLOR = (os.environ.get("NO_COLOR") is not None) or (os.environ.get("TERM") == "dumb")
@@ -443,6 +443,173 @@ def natural_key(s: str):
     """Natural sort key: splits digits for A10 < A2 issues."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
 
+# ====== Scan overview helpers (NEW) ======
+_HNAME_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
+
+def _is_hostname(s: str) -> bool:
+    return bool(_HNAME_RE.match(s)) and len(s) <= 253
+
+def _is_ipv4(s: str) -> bool:
+    try:
+        ipaddress.IPv4Address(s)
+        return True
+    except Exception:
+        return False
+
+def _is_ipv6(s: str) -> bool:
+    try:
+        ipaddress.IPv6Address(s)
+        return True
+    except Exception:
+        return False
+
+def _is_valid_token(tok: str) -> tuple[bool, str | None, str | None]:
+    """
+    Validate a token as host or host:port.
+    Returns (valid, host, port_or_None). Port is a string if present.
+    Valid forms:
+      - hostname
+      - IPv4
+      - IPv6 (bare)
+      - [IPv6]
+      - hostname:port / IPv4:port / [IPv6]:port
+    """
+    tok = tok.strip()
+    if not tok:
+        return False, None, None
+
+    # [IPv6] or [IPv6]:port
+    if tok.startswith("["):
+        m = re.match(r"^\[(.+?)\](?::(\d+))?$", tok)
+        if m and _is_ipv6(m.group(1)):
+            port = m.group(2)
+            if port is None:
+                return True, m.group(1), None
+            if port.isdigit() and 1 <= int(port) <= 65535:
+                return True, m.group(1), port
+        return False, None, None
+
+    # Bare IPv6 (no port)
+    if tok.count(":") >= 2 and not re.search(r"]:\d+$", tok):
+        return (_is_ipv6(tok), tok if _is_ipv6(tok) else None, None)
+
+    # host[:port] (hostname or IPv4)
+    if ":" in tok:
+        h, p = tok.rsplit(":", 1)
+        if p.isdigit() and 1 <= int(p) <= 65535 and (_is_hostname(h) or _is_ipv4(h)):
+            return True, h, p
+        return False, None, None
+
+    # host without port
+    if _is_hostname(tok) or _is_ipv4(tok) or _is_ipv6(tok):
+        return True, tok, None
+
+    return False, None, None
+
+def _parse_for_overview(path: Path):
+    """Parse a file for overview metrics only (strict). Returns:
+       (hosts:list[str], ports:set[str], combos:dict[host]->set[port], had_explicit:bool, malformed_count:int)
+    """
+    hosts = []
+    ports = set()
+    combos = defaultdict(set)
+    malformed = 0
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    for raw in text.splitlines():
+        ln = raw.strip()
+        if not ln:
+            continue
+        for tok in re.split(r"[\s,]+", ln):
+            valid, h, p = _is_valid_token(tok)
+            if not valid:
+                malformed += 1
+                continue
+            hosts.append(h)
+            if p:
+                ports.add(p)
+                combos[h].add(p)
+    hosts = list(dict.fromkeys(hosts))
+    had_explicit = any(combos[h] for h in combos)
+    return hosts, ports, combos, had_explicit, malformed
+
+def _count_reviewed_in_scan(scan_dir: Path):
+    total_files = 0
+    reviewed_files = 0
+    for sev in list_dirs(scan_dir):
+        files = [f for f in list_files(sev) if f.suffix.lower() == ".txt"]
+        total_files += len(files)
+        reviewed = [f for f in files if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))]
+        reviewed = list(dict.fromkeys(reviewed))
+        reviewed_files += len(reviewed)
+    return total_files, reviewed_files
+
+def show_scan_summary(scan_dir: Path, top_ports_n: int = 10):
+    """Compute and print scan-level overview (shown right after choosing a scan)."""
+    header(f"Scan Overview — {scan_dir.name}")
+
+    # Collect all TXT files across severities
+    severities = list_dirs(scan_dir)
+    all_files = []
+    for sev in severities:
+        all_files.extend([f for f in list_files(sev) if f.suffix.lower() == ".txt"])
+
+    total_files, reviewed_files = _count_reviewed_in_scan(scan_dir)
+
+    unique_hosts = set()
+    ipv4_set = set()
+    ipv6_set = set()
+    ports_counter = Counter()  # per-file prevalence
+    empties = 0
+    malformed_total = 0
+    combo_sig_counter = Counter()
+
+    for f in all_files:
+        hosts, ports, combos, had_explicit, malformed = _parse_for_overview(f)
+        malformed_total += malformed
+        if not hosts:
+            empties += 1
+        unique_hosts.update(hosts)
+        # Track IP versions (hostnames are ignored for v4/v6 split)
+        for h in hosts:
+            try:
+                ip = ipaddress.ip_address(h)
+                if isinstance(ip, ipaddress.IPv4Address):
+                    ipv4_set.add(h)
+                elif isinstance(ip, ipaddress.IPv6Address):
+                    ipv6_set.add(h)
+            except Exception:
+                pass
+        # per-file port prevalence
+        for p in ports:
+            ports_counter[p] += 1
+        # identical host:port cluster signature
+        sig = _normalize_combos(hosts, ports, combos, had_explicit)
+        combo_sig_counter[sig] += 1
+
+    # Folder health
+    info(f"Files: {total_files}  |  Reviewed: {reviewed_files}  |  Empty: {empties}  |  Malformed tokens: {malformed_total}")
+
+    # Host coverage
+    info(f"Hosts: unique={len(unique_hosts)}  (IPv4: {len(ipv4_set)} | IPv6: {len(ipv6_set)})")
+    if unique_hosts:
+        sample = ", ".join(list(sorted(unique_hosts))[:5])
+        info(f"  Example: {sample}{' ...' if len(unique_hosts) > 5 else ''}")
+
+    # Port landscape
+    port_set = set(ports_counter.keys())
+    info(f"Ports: unique={len(port_set)}")
+    if ports_counter:
+        top_ports = ports_counter.most_common(top_ports_n)
+        tp_str = ", ".join(f"{p} ({n} files)" for p, n in top_ports)
+        info(f"  Top {top_ports_n}: {tp_str}")
+
+    # Duplicate/cluster insight
+    multi_clusters = [c for c in combo_sig_counter.values() if c > 1]
+    info(f"Identical host:port groups across all files: {len(multi_clusters)}")
+    if multi_clusters:
+        sizes = sorted(multi_clusters, reverse=True)[:3]
+        info("  Largest clusters: " + ", ".join(f"{n} files" for n in sizes))
+
 # ============================================================
 
 def main():
@@ -483,6 +650,9 @@ def main():
             warn("Invalid choice.")
             continue
         scan_dir = scans[int(ans)-1]
+
+        # --- NEW: show scan overview immediately after selecting scan ---
+        show_scan_summary(scan_dir)
 
         # Severity loop
         while True:
