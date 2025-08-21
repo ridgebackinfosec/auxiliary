@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # mundane.py
-import sys, os, re, random, shutil, tempfile, subprocess, ipaddress
+import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, argparse
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict, Counter
@@ -407,7 +407,7 @@ def compare_filtered(files):
     port_intersection = set.intersection(*all_port_sets) if all_port_sets else set()
     port_union        = set.union(*all_port_sets) if all_port_sets else set()
 
-    # Canonical signatures
+    # Canonical signatures (host-only, ports-only, and combos)
     host_sigs  = [tuple(sorted(h)) for _, h, _, _, _ in parsed]
     port_sigs  = [tuple(sorted(p, key=lambda x: int(x))) for _, _, p, _, _ in parsed]
     combo_sigs = [_normalize_combos(h, p, c, e) for _, h, p, c, e in parsed]
@@ -486,6 +486,12 @@ def _is_valid_token(tok: str) -> tuple[bool, str | None, str | None]:
     """
     Validate a token as host or host:port.
     Returns (valid, host, port_or_None). Port is a string if present.
+    Valid forms:
+      - hostname
+      - IPv4
+      - IPv6 (bare)
+      - [IPv6]
+      - hostname:port / IPv4:port / [IPv6]:port
     """
     tok = tok.strip()
     if not tok:
@@ -572,7 +578,7 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
     ipv4_set = set()
     ipv6_set = set()
     ports_counter = Counter()  # per-file prevalence
-    empties = 0
+   .empties = 0
     malformed_total = 0
     combo_sig_counter = Counter()
 
@@ -582,6 +588,7 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
         if not hosts:
             empties += 1
         unique_hosts.update(hosts)
+        # Track IP versions (hostnames are ignored for v4/v6 split)
         for h in hosts:
             try:
                 ip = ipaddress.ip_address(h)
@@ -591,22 +598,31 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
                     ipv6_set.add(h)
             except Exception:
                 pass
+        # per-file port prevalence
         for p in ports:
             ports_counter[p] += 1
+        # identical host:port cluster signature
         sig = _normalize_combos(hosts, ports, combos, had_explicit)
         combo_sig_counter[sig] += 1
 
+    # Folder health
     info(f"Files: {total_files}  |  Reviewed: {reviewed_files}  |  Empty: {empties}  |  Malformed tokens: {malformed_total}")
+
+    # Host coverage
     info(f"Hosts: unique={len(unique_hosts)}  (IPv4: {len(ipv4_set)} | IPv6: {len(ipv6_set)})")
     if unique_hosts:
         sample = ", ".join(list(sorted(unique_hosts))[:5])
         info(f"  Example: {sample}{' ...' if len(unique_hosts) > 5 else ''}")
+
+    # Port landscape
     port_set = set(ports_counter.keys())
     info(f"Ports: unique={len(port_set)}")
     if ports_counter:
         top_ports = ports_counter.most_common(top_ports_n)
         tp_str = ", ".join(f"{p} ({n} files)" for p, n in top_ports)
         info(f"  Top {top_ports_n}: {tp_str}")
+
+    # Duplicate/cluster insight
     multi_clusters = [c for c in combo_sig_counter.values() if c > 1]
     info(f"Identical host:port groups across all files: {len(multi_clusters)}")
     if multi_clusters:
@@ -680,18 +696,20 @@ def render_placeholders(template: str, mapping: dict) -> str:
 
 # ============================================================
 
-def main():
+def main(args):
     # No hard require for nmap here — check per selected tool instead.
     use_sudo = root_or_sudo_available()
     if not use_sudo:
         warn("Not running as root and no 'sudo' found — some scan types (e.g., UDP) may fail.")
 
-    export_root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("./nessus_plugin_hosts")
+    export_root = Path(args.export_root)
     if not export_root.exists():
         err(f"Export root not found: {export_root}")
         sys.exit(1)
 
     ok(f"Using export root: {export_root.resolve()}")
+    if args.no_tools:
+        info("(no-tools mode: tool prompts disabled for this session)")
 
     reviewed_total = []
     completed_total = []
@@ -877,11 +895,12 @@ def main():
                     ok(f"Summary: {renamed} renamed, {len(candidates)-renamed} skipped.")
                     continue
                 if ans == "h":
-                    # Compare hosts/ports across filtered files
+                    # Compare hosts/ports across filtered files (fresh each time; numbering restarts from 1)
                     if not candidates:
                         warn("No files match the current filter.")
                         continue
-                    groups = compare_filtered(candidates)
+                    groups = compare_filtered(candidates)  # returns groups sorted by size DESC
+                    # Immediate group selection with compact prompt showing only first 5 groups
                     if groups:
                         visible = min(5, len(groups))
                         opts = " | ".join(f"g{i+1}" for i in range(visible))
@@ -937,6 +956,20 @@ def main():
                 except KeyboardInterrupt:
                     continue
 
+                # ============ NO-TOOLS MODE SHORT-CIRCUIT ============
+                if args.no_tools:
+                    info("(no-tools mode active — skipping tool selection)")
+                    try:
+                        if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                            newp = rename_review_complete(chosen)
+                            completed_total.append(newp.name if newp != chosen else chosen.name)
+                        else:
+                            reviewed_total.append(chosen.name)
+                    except KeyboardInterrupt:
+                        continue
+                    continue
+                # =====================================================
+
                 # Run a tool?
                 try:
                     do_scan = yesno("\nRun a tool now? (y/N):", default="n")
@@ -982,7 +1015,6 @@ def main():
                 tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
 
                 # results base dir stays the same; each run gets a fresh timestamped oabase
-                # (build_results_paths is called each run, but out_dir path is constant)
                 out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir.name) / Path(chosen.name).stem
                 out_dir_static.mkdir(parents=True, exist_ok=True)
 
@@ -1149,7 +1181,13 @@ def main():
     ok("Done.")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Review Nessus plugin host files and optionally run tools.")
+    parser.add_argument("export_root", nargs="?", default="./nessus_plugin_hosts",
+                        help="Root directory containing scan folders (default: ./nessus_plugin_hosts)")
+    parser.add_argument("--no-tools", action="store_true",
+                        help="Disable all tool prompts and execution for this session.")
+    args = parser.parse_args()
     try:
-        main()
+        main(args)
     except KeyboardInterrupt:
         warn("\nInterrupted — goodbye.")
