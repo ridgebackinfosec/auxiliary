@@ -200,15 +200,26 @@ def build_nmap_cmd(udp, nse_option, ips_file, ports_str, use_sudo, oabase: Path)
 
 def build_netexec_cmd(exec_bin: str, protocol: str, ips_file: Path, oabase: Path):
     """
-    Minimal, safe default:
-      nxc <protocol> -iL <ips_file> --log <oabase>.nxc.<protocol>.log
-    For SMB we keep '--shares' as before.
+    NetExec command builder.
+    - Passes the targets file as a positional argument (no -iL).
+    - Always logs to {oabase}.nxc.<protocol>.log
+    - SMB adds --gen-relay-list and --shares, writing the relay list into the artifacts area.
+    Returns: (cmd_list, log_path, relay_path_or_None)
     """
     log_path = f"{str(oabase)}.nxc.{protocol}.log"
-    cmd = [exec_bin, protocol, "-iL", str(ips_file), "--log", log_path]
+    relay_path = None
     if protocol == "smb":
-        cmd += ["--shares"]
-    return cmd, log_path
+        # Write the relay list next to other run artifacts
+        relay_path = f"{str(oabase)}.SMB_Signing_not_required_targets.txt"
+        cmd = [
+            exec_bin, "smb", str(ips_file),
+            "--gen-relay-list", relay_path,
+            "--shares",
+            "--log", log_path
+        ]
+    else:
+        cmd = [exec_bin, protocol, str(ips_file), "--log", log_path]
+    return cmd, log_path, relay_path
 
 def copy_to_clipboard(s: str) -> tuple:
     """Best-effort cross-platform clipboard.
@@ -407,7 +418,7 @@ def compare_filtered(files):
     port_intersection = set.intersection(*all_port_sets) if all_port_sets else set()
     port_union        = set.union(*all_port_sets) if all_port_sets else set()
 
-    # Canonical signatures
+    # Canonical signatures (host-only, ports-only, and combos)
     host_sigs  = [tuple(sorted(h)) for _, h, _, _, _ in parsed]
     port_sigs  = [tuple(sorted(p, key=lambda x: int(x))) for _, _, p, _, _ in parsed]
     combo_sigs = [_normalize_combos(h, p, c, e) for _, h, p, c, e in parsed]
@@ -1028,6 +1039,8 @@ def main(args):
                     _tmp_dir, oabase = build_results_paths(scan_dir, sev_dir, chosen.name)
                     results_dir = out_dir_static  # for clearer prints
 
+                    nxc_relay_path = None  # reset per run
+
                     if tool_choice == "nmap":
                         # Nmap-specific options
                         try:
@@ -1076,7 +1089,8 @@ def main(args):
                             warn("Neither 'nxc' nor 'netexec' was found in PATH.")
                             info("Skipping run; returning to tool menu.")
                             continue
-                        cmd, nxc_log = build_netexec_cmd(exec_bin, protocol, ips_file, oabase)
+                        cmd, nxc_log, relay_path = build_netexec_cmd(exec_bin, protocol, ips_file, oabase)
+                        nxc_relay_path = relay_path
                         display_cmd = cmd
                         artifact_note = f"NetExec log:   {nxc_log}"
 
@@ -1144,6 +1158,8 @@ def main(args):
                     if ports_str:
                         info(f" - Host:Ports: {workdir / 'tcp_host_ports.list'}")
                     info(f" - {artifact_note}")
+                    if nxc_relay_path:
+                        info(f" - Relay targets: {nxc_relay_path}")
                     info(f" - Results dir:{results_dir}")
 
                     # Run another command in this same context?
