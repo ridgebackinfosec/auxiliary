@@ -407,7 +407,7 @@ def compare_filtered(files):
     port_intersection = set.intersection(*all_port_sets) if all_port_sets else set()
     port_union        = set.union(*all_port_sets) if all_port_sets else set()
 
-    # Canonical signatures (host-only, ports-only, and combos)
+    # Canonical signatures
     host_sigs  = [tuple(sorted(h)) for _, h, _, _, _ in parsed]
     port_sigs  = [tuple(sorted(p, key=lambda x: int(x))) for _, _, p, _, _ in parsed]
     combo_sigs = [_normalize_combos(h, p, c, e) for _, h, p, c, e in parsed]
@@ -482,7 +482,7 @@ def _is_ipv6(s: str) -> bool:
     except Exception:
         return False
 
-def _is_valid_token(tok: str) -> tuple[bool, str | None, str | None]:
+def _is_valid_token(tok: str):
     """
     Validate a token as host or host:port.
     Returns (valid, host, port_or_None). Port is a string if present.
@@ -578,7 +578,7 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
     ipv4_set = set()
     ipv6_set = set()
     ports_counter = Counter()  # per-file prevalence
-   .empties = 0
+    empties = 0
     malformed_total = 0
     combo_sig_counter = Counter()
 
