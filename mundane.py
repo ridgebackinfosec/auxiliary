@@ -24,6 +24,7 @@ def err(msg):    print(f"{C.RED}{msg}{C.RESET}")
 def info(msg):   print(msg)
 def fmt_action(text): return f"{C.CYAN}>> {text}{C.RESET}"
 def fmt_reviewed(text): return f"{C.MAGENTA}{text}{C.RESET}"
+def cyan_label(s: str) -> str: return f"{C.CYAN}{s}{C.RESET}"
 
 def require_cmd(name):
     if shutil.which(name) is None:
@@ -574,7 +575,7 @@ def _count_reviewed_in_scan(scan_dir: Path):
     return total_files, reviewed_files
 
 def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
-    """Compute and print scan-level overview (shown right after choosing a scan)."""
+    """Compute and print scan-level overview (shown right after choosing a scan) with cyan labels."""
     header(f"Scan Overview — {scan_dir.name}")
 
     # Collect all TXT files across severities
@@ -616,29 +617,33 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
         sig = _normalize_combos(hosts, ports, combos, had_explicit)
         combo_sig_counter[sig] += 1
 
-    # Folder health
-    info(f"Files: {total_files}  |  Reviewed: {reviewed_files}  |  Empty: {empties}  |  Malformed tokens: {malformed_total}")
+    # Folder health (cyan labels)
+    info(f"{cyan_label('Files:')} {total_files}  |  "
+         f"{cyan_label('Reviewed:')} {reviewed_files}  |  "
+         f"{cyan_label('Empty:')} {empties}  |  "
+         f"{cyan_label('Malformed tokens:')} {malformed_total}")
 
     # Host coverage
-    info(f"Hosts: unique={len(unique_hosts)}  (IPv4: {len(ipv4_set)} | IPv6: {len(ipv6_set)})")
+    info(f"{cyan_label('Hosts:')} unique={len(unique_hosts)}  "
+         f"({cyan_label('IPv4:')} {len(ipv4_set)} | {cyan_label('IPv6:')} {len(ipv6_set)})")
     if unique_hosts:
         sample = ", ".join(list(sorted(unique_hosts))[:5])
-        info(f"  Example: {sample}{' ...' if len(unique_hosts) > 5 else ''}")
+        info(f"  {cyan_label('Example:')} {sample}{' ...' if len(unique_hosts) > 5 else ''}")
 
     # Port landscape
     port_set = set(ports_counter.keys())
-    info(f"Ports: unique={len(port_set)}")
+    info(f"{cyan_label('Ports:')} unique={len(port_set)}")
     if ports_counter:
         top_ports = ports_counter.most_common(top_ports_n)
         tp_str = ", ".join(f"{p} ({n} files)" for p, n in top_ports)
-        info(f"  Top {top_ports_n}: {tp_str}")
+        info(f"  {cyan_label(f'Top {top_ports_n}:')} {tp_str}")
 
     # Duplicate/cluster insight
     multi_clusters = [c for c in combo_sig_counter.values() if c > 1]
-    info(f"Identical host:port groups across all files: {len(multi_clusters)}")
+    info(f"{cyan_label('Identical host:port groups across all files:')} {len(multi_clusters)}")
     if multi_clusters:
         sizes = sorted(multi_clusters, reverse=True)[:3]
-        info("  Largest clusters: " + ", ".join(f"{n} files" for n in sizes))
+        info("  " + cyan_label("Largest clusters:") + " " + ", ".join(f"{n} files" for n in sizes))
 
 # ========== Tool selection ==========
 def choose_tool():
