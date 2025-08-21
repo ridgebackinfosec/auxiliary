@@ -763,15 +763,39 @@ def main(args):
             if not severities:
                 warn("No severity directories in this scan.")
                 break
+
             def sev_key(p: Path):
                 m = re.match(r"^(\d+)_", p.name)
                 return -(int(m.group(1)) if m else 0), p.name
             severities = sorted(severities, key=sev_key)
 
+            # Compute MSF virtual group
+            msf_files = []  # list of (Path file, Path severity_dir)
+            for sd in severities:
+                for f in list_files(sd):
+                    if f.suffix.lower() == ".txt" and f.name.endswith("-MSF.txt"):
+                        msf_files.append((f, sd))
+            has_msf = len(msf_files) > 0
+            msf_total = len(msf_files)
+            msf_reviewed = sum(
+                1 for (f, _sd) in msf_files
+                if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))
+            )
+            msf_unrev = msf_total - msf_reviewed
+
+            # Render the standard severities
             for i, sd in enumerate(severities, 1):
                 unrev, rev, tot = _count_severity_files(sd)
                 label = pretty_severity_label(sd.name)
                 print(f"[{i}] {label} — unreviewed: {_color_unreviewed(unrev)} | reviewed: {fmt_reviewed(rev)} | total: {tot}")
+
+            # Optional Metasploit Module entry (always at the bottom)
+            extra_offset = 0
+            if has_msf:
+                extra_offset = 1
+                idx = len(severities) + 1
+                print(f"[{idx}] Metasploit Module — unreviewed: {_color_unreviewed(msf_unrev)} | reviewed: {fmt_reviewed(msf_reviewed)} | total: {msf_total}")
+
             print(fmt_action("[B] Back"))
             try:
                 ans = input("Choose: ").strip().lower()
@@ -780,19 +804,423 @@ def main(args):
                 break
             if ans in ("b", "back"):
                 break
-            if not ans.isdigit() or not (1 <= int(ans) <= len(severities)):
+            options_count = len(severities) + extra_offset
+            if not ans.isdigit() or not (1 <= int(ans) <= options_count):
                 warn("Invalid choice.")
                 continue
-            sev_dir = severities[int(ans)-1]
+            choice_idx = int(ans)
 
-            # Per-severity file review
+            # === Normal severity selected ===
+            if choice_idx <= len(severities):
+                sev_dir = severities[choice_idx-1]
+
+                # Per-severity file review
+                file_filter = ""
+                reviewed_filter = ""
+                group_filter = None  # (group_index:int, names:set[str]) — resets whenever you enter a severity
+                sort_mode = "name"   # "name" or "hosts"
+                file_parse_cache = {}  # Path -> (host_count:int, ports_str:str) for this severity view
+
+                def get_counts_for(path: Path):
+                    if path in file_parse_cache:
+                        return file_parse_cache[path]
+                    try:
+                        lines = read_text_lines(path)
+                        hosts, ports_str = parse_hosts_ports(lines)
+                        stats = (len(hosts), ports_str)
+                    except Exception:
+                        stats = (0, "")
+                    file_parse_cache[path] = stats
+                    return stats
+
+                while True:
+                    header(f"Severity: {pretty_severity_label(sev_dir.name)}")
+                    files = [f for f in list_files(sev_dir) if f.suffix.lower() == ".txt"]
+                    reviewed = [f for f in files if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))]
+                    unreviewed = [f for f in files if f not in reviewed]
+
+                    # Apply substring filter and (optional) group filter
+                    candidates = [
+                        u for u in unreviewed
+                        if (file_filter.lower() in u.name.lower())
+                        and (group_filter is None or u.name in group_filter[1])
+                    ]
+
+                    # Sort candidates for display
+                    if sort_mode == "hosts":
+                        display = sorted(
+                            candidates,
+                            key=lambda p: (-get_counts_for(p)[0], natural_key(p.name))
+                        )
+                    else:
+                        display = sorted(candidates, key=lambda p: natural_key(p.name))
+
+                    # Filtering UI (unreviewed)
+                    try:
+                        status = f"Unreviewed files ({len(unreviewed)}). Current filter: '{file_filter or '*'}'"
+                        if group_filter:
+                            status += f" | Group filter: #{group_filter[0]} ({len(group_filter[1])})"
+                        status += f" | Sort: {'Host count ↓' if sort_mode=='hosts' else 'Name A→Z'}"
+                        print(status)
+
+                        actions = "[F] Set filter / [C] Clear filter / [R] View reviewed files / "
+                        actions += f"[M] Mark ALL filtered as REVIEW_COMPLETE ({len(candidates)}) / "
+                        actions += "[H] Compare hosts/ports in filtered files / "
+                        actions += "[O] Toggle sort / "
+                        if group_filter:
+                            actions += "[X] Clear group filter / "
+                        actions += "[B] Back / [Enter] Open first match"
+                        print(fmt_action(actions))
+
+                        for i, f in enumerate(display, 1):
+                            if sort_mode == "hosts":
+                                hc, _ps = get_counts_for(f)
+                                print(f"[{i}] {f.name}  — hosts: {hc}")
+                            else:
+                                print(f"[{i}] {f.name}")
+                        ans2 = input("Choose a file number, or action: ").strip().lower()
+                    except KeyboardInterrupt:
+                        warn("\nInterrupted — returning to severity menu.")
+                        break
+
+                    # --- Actions ---
+                    if ans2 in ("b", "back"):
+                        break
+                    if ans2 == "f":
+                        file_filter = input("Enter substring to filter by: ").strip()
+                        continue
+                    if ans2 == "c":
+                        file_filter = ""
+                        continue
+                    if ans2 == "o":
+                        sort_mode = "hosts" if sort_mode == "name" else "name"
+                        ok(f"Sorting by {'host count (desc)' if sort_mode=='hosts' else 'name (A→Z)'}")
+                        continue
+                    if ans2 == "x" and group_filter:
+                        group_filter = None
+                        ok("Cleared group filter.")
+                        continue
+                    if ans2 == "r":
+                        # Reviewed viewer
+                        header("Reviewed files (read-only)")
+                        print(f"Current filter: '{reviewed_filter or '*'}'")
+                        print(fmt_action("[F] Set filter / [C] Clear filter / [B] Back"))
+                        for i, f in enumerate([r for r in reviewed if (reviewed_filter.lower() in r.name.lower())], 1):
+                            print(f"[{i}] {fmt_reviewed(f.name)}")
+                        try:
+                            choice = input("Action or [B]ack: ").strip().lower()
+                        except KeyboardInterrupt:
+                            warn("\nInterrupted — returning.")
+                            continue
+                        if choice == "f":
+                            reviewed_filter = input("Enter substring to filter by: ").strip()
+                            continue
+                        if choice == "c":
+                            reviewed_filter = ""
+                            continue
+                        if choice in ("b", "back"):
+                            continue
+                        warn("Read-only view; no file selection here.")
+                        continue
+                    if ans2 == "m":
+                        # Mark all filtered as REVIEW_COMPLETE
+                        if not candidates:
+                            warn("No files match the current filter.")
+                            continue
+                        confirm = input(f"You are about to rename {len(candidates)} files with prefix 'REVIEW_COMPLETE-'.\nType 'mark' to confirm, or anything else to cancel: ").strip().lower()
+                        if confirm != "mark":
+                            info("Canceled.")
+                            continue
+                        renamed = 0
+                        for f in candidates:
+                            newp = rename_review_complete(f)
+                            if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
+                                renamed += 1
+                                completed_total.append(newp.name)
+                        ok(f"Summary: {renamed} renamed, {len(candidates)-renamed} skipped.")
+                        continue
+                    if ans2 == "h":
+                        # Compare hosts/ports across filtered files
+                        if not candidates:
+                            warn("No files match the current filter.")
+                            continue
+                        groups = compare_filtered(candidates)  # returns groups sorted by size DESC
+                        if groups:
+                            visible = min(5, len(groups))
+                            opts = " | ".join(f"g{i+1}" for i in range(visible))
+                            ellipsis = " | etc." if len(groups) > visible else ""
+                            choice = input(
+                                f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: "
+                            ).strip().lower()
+                            if choice.startswith("g") and choice[1:].isdigit():
+                                idx = int(choice[1:]) - 1
+                                if 0 <= idx < len(groups):
+                                    group_filter = (idx + 1, set(groups[idx]))
+                                    ok(f"Applied group filter #{idx+1} ({len(groups[idx])} files).")
+                        continue
+
+                    # Default-select top item on Enter
+                    if ans2 == "":
+                        if not display:
+                            warn("No files match the current filter.")
+                            continue
+                        chosen = display[0]
+                    else:
+                        if not ans2.isdigit():
+                            warn("Please select a file by number, or use actions above.")
+                            continue
+                        idx = int(ans2) - 1
+                        if idx < 0 or idx >= len(display):
+                            warn("Invalid index.")
+                            continue
+                        chosen = display[idx]
+
+                    # Per-file workflow
+                    lines = read_text_lines(chosen)
+                    tokens = [ln for ln in lines if ln.strip()]
+                    if not tokens:
+                        warn("File is empty; skipping.")
+                        skipped_total.append(chosen.name)
+                        continue
+
+                    # Parse hosts/ports
+                    hosts, ports_str = parse_hosts_ports(tokens)
+                    header("Preview")
+                    info(f"File: {chosen.name}")
+                    info(f"Hosts parsed: {len(hosts)}")
+                    if hosts:
+                        info(f"Example host: {hosts[0]}")
+                    if ports_str:
+                        info(f"Ports detected: {ports_str}")
+
+                    # Offer to view file
+                    try:
+                        if yesno("\nWould you like to view the contents of the selected plugin file? (y/N):", default="n"):
+                            safe_print_file(chosen)
+                    except KeyboardInterrupt:
+                        continue
+
+                    # ============ NO-TOOLS MODE SHORT-CIRCUIT ============
+                    if args.no_tools:
+                        info("(no-tools mode active — skipping tool selection)")
+                        try:
+                            if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                                newp = rename_review_complete(chosen)
+                                completed_total.append(newp.name if newp != chosen else chosen.name)
+                            else:
+                                reviewed_total.append(chosen.name)
+                        except KeyboardInterrupt:
+                            continue
+                        continue
+                    # =====================================================
+
+                    # Run a tool?
+                    try:
+                        do_scan = yesno("\nRun a tool now? (y/N):", default="n")
+                    except KeyboardInterrupt:
+                        continue
+
+                    if not do_scan:
+                        try:
+                            if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                                newp = rename_review_complete(chosen)
+                                completed_total.append(newp.name if newp != chosen else chosen.name)
+                            else:
+                                reviewed_total.append(chosen.name)
+                        except KeyboardInterrupt:
+                            continue
+                        continue
+
+                    # Sampling (applies to any tool)
+                    sample_hosts = hosts
+                    if len(hosts) > 5:
+                        try:
+                            do_sample = yesno(f"There are {len(hosts)} hosts. Sample a subset? (y/N):", default="n")
+                        except KeyboardInterrupt:
+                            continue
+                        if do_sample:
+                            while True:
+                                try:
+                                    k = input("How many hosts to sample? ").strip()
+                                except KeyboardInterrupt:
+                                    warn("\nInterrupted — not sampling.")
+                                    break
+                                if not k.isdigit() or int(k) <= 0:
+                                    warn("Enter a positive integer.")
+                                    continue
+                                k = min(int(k), len(hosts))
+                                sample_hosts = random.sample(hosts, k)
+                                ok(f"Sampling {k} host(s).")
+                                break
+
+                    # --- Prepare per-file context ONCE (persists across multiple commands) ---
+                    workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
+                    tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
+
+                    out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir.name) / Path(chosen.name).stem
+                    out_dir_static.mkdir(parents=True, exist_ok=True)
+
+                    # ----- Tool loop: allow running multiple commands in the same context -----
+                    while True:
+                        tool_choice = choose_tool()
+                        if tool_choice is None:
+                            break  # back to file menu
+
+                        # Fresh timestamped oabase per run
+                        _tmp_dir, oabase = build_results_paths(scan_dir, sev_dir, chosen.name)
+                        results_dir = out_dir_static  # for clearer prints
+
+                        nxc_relay_path = None  # reset per run
+
+                        if tool_choice == "nmap":
+                            try:
+                                udp_ports = yesno("\nDo you want to perform UDP scanning instead of TCP? (y/N):", default="n")
+                            except KeyboardInterrupt:
+                                break
+
+                            try:
+                                nse_scripts, needs_udp = choose_nse_profile()
+                            except KeyboardInterrupt:
+                                break
+
+                            try:
+                                extra = input("Enter additional NSE scripts (comma-separated, no spaces, or Enter to skip): ").strip()
+                            except KeyboardInterrupt:
+                                break
+                            if extra:
+                                for s in extra.split(","):
+                                    s = s.strip()
+                                    if s and s not in nse_scripts:
+                                        nse_scripts.append(s)
+
+                            extras_imply_udp = any(s.lower().startswith("snmp") or s.lower() == "ipmi-version" for s in nse_scripts)
+                            if needs_udp or extras_imply_udp:
+                                if not udp_ports:
+                                    warn("SNMP/IPMI selected — switching to UDP scan.")
+                                udp_ports = True
+
+                            if nse_scripts:
+                                info(f"{C.BOLD}NSE scripts to run:{C.RESET} {','.join(nse_scripts)}")
+                            nse_option = f"--script={','.join(nse_scripts)}" if nse_scripts else ""
+
+                            ips_file = udp_ips if udp_ports else tcp_ips
+                            require_cmd("nmap")
+                            cmd = build_nmap_cmd(udp_ports, nse_option, ips_file, ports_str, use_sudo, oabase)
+                            display_cmd = cmd
+                            artifact_note = f"Results base:  {oabase}  (nmap -oA)"
+
+                        elif tool_choice == "netexec":
+                            protocol = choose_netexec_protocol()
+                            if not protocol:
+                                continue
+                            ips_file = tcp_ips
+                            exec_bin = resolve_cmd(["nxc", "netexec"])
+                            if not exec_bin:
+                                warn("Neither 'nxc' nor 'netexec' was found in PATH.")
+                                info("Skipping run; returning to tool menu.")
+                                continue
+                            cmd, nxc_log, relay_path = build_netexec_cmd(exec_bin, protocol, ips_file, oabase)
+                            nxc_relay_path = relay_path
+                            display_cmd = cmd
+                            artifact_note = f"NetExec log:   {nxc_log}"
+
+                        elif tool_choice == "custom":
+                            mapping = {
+                                "{TCP_IPS}": tcp_ips,
+                                "{UDP_IPS}": udp_ips,
+                                "{TCP_HOST_PORTS}": tcp_sockets,
+                                "{PORTS}": ports_str or "",
+                                "{WORKDIR}": workdir,
+                                "{RESULTS_DIR}": results_dir,
+                                "{OABASE}": oabase,
+                            }
+                            custom_command_help(mapping)
+                            try:
+                                template = input("\nEnter your command (placeholders allowed): ").strip()
+                            except KeyboardInterrupt:
+                                break
+                            if not template:
+                                warn("No command entered.")
+                                continue
+                            rendered = render_placeholders(template, mapping)
+                            display_cmd = rendered
+                            cmd = rendered  # string
+                            artifact_note = f"OABASE path:   {oabase}"
+
+                        else:
+                            warn("Unknown tool selection.")
+                            continue
+
+                        # Command review
+                        action = command_review_menu(display_cmd)
+
+                        if action == "copy":
+                            cmd_str = display_cmd if isinstance(display_cmd, str) else " ".join(display_cmd)
+                            if copy_to_clipboard(cmd_str)[0]:
+                                ok("Command copied to clipboard.")
+                            else:
+                                warn("Could not copy to clipboard automatically. Here it is to copy manually:")
+                                print(cmd_str)
+                        elif action == "run":
+                            try:
+                                if isinstance(cmd, list):
+                                    subprocess.run(cmd, check=True)
+                                else:
+                                    shell_exec = shutil.which("bash") or shutil.which("sh")
+                                    subprocess.run(cmd, shell=True, check=True, executable=shell_exec)
+                            except KeyboardInterrupt:
+                                warn("\nRun interrupted — returning to tool menu.")
+                                continue
+                            except subprocess.CalledProcessError as e:
+                                err(f"Command exited with {e.returncode}.")
+                                info("Returning to tool menu.")
+                                continue
+                        elif action == "cancel":
+                            info("Canceled. Returning to tool menu.")
+                            continue
+
+                        # Artifacts for this run
+                        header("Artifacts")
+                        info(f"Workspace:     {workdir}")
+                        info(f" - Hosts:      {workdir / 'tcp_ips.list'}")
+                        if ports_str:
+                            info(f" - Host:Ports: {workdir / 'tcp_host_ports.list'}")
+                        info(f" - {artifact_note}")
+                        if nxc_relay_path:
+                            info(f" - Relay targets: {nxc_relay_path}")
+                        info(f" - Results dir:{results_dir}")
+
+                        try:
+                            again = yesno("\nRun another command for this plugin file? (y/N):", default="n")
+                        except KeyboardInterrupt:
+                            break
+                        if not again:
+                            break  # exit tool loop
+
+                    # After leaving tool loop, optional rename
+                    try:
+                        if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                            newp = rename_review_complete(chosen)
+                            completed_total.append(newp.name if newp != chosen else chosen.name)
+                        else:
+                            reviewed_total.append(chosen.name)
+                    except KeyboardInterrupt:
+                        continue
+
+                # end while True (per-severity)
+                continue  # back to severity menu
+
+            # === Metasploit Module (virtual severity) selected ===
+            # msf_files: list of (file_path, sev_dir)
+            sev_map = {f: sd for (f, sd) in msf_files}
+
             file_filter = ""
             reviewed_filter = ""
-            group_filter = None  # (group_index:int, names:set[str]) — resets whenever you enter a severity
-            sort_mode = "name"   # "name" or "hosts"
-            file_parse_cache = {}  # Path -> (host_count:int, ports_str:str) for this severity view
+            group_filter = None
+            sort_mode = "name"
+            file_parse_cache = {}
 
-            def get_counts_for(path: Path):
+            def get_counts_for_msf(path: Path):
                 if path in file_parse_cache:
                     return file_parse_cache[path]
                 try:
@@ -805,30 +1233,29 @@ def main(args):
                 return stats
 
             while True:
-                header(f"Severity: {pretty_severity_label(sev_dir.name)}")
-                files = [f for f in list_files(sev_dir) if f.suffix.lower() == ".txt"]
-                reviewed = [f for f in files if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))]
-                unreviewed = [f for f in files if f not in reviewed]
+                header("Severity: Metasploit Module")
+                files_all = [f for (f, _sd) in msf_files if f.suffix.lower() == ".txt"]
+                reviewed_all = [f for f in files_all if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))]
+                unreviewed_all = [f for f in files_all if f not in reviewed_all]
 
-                # Apply substring filter and (optional) group filter
+                # Apply filter and optional group filter
                 candidates = [
-                    u for u in unreviewed
+                    u for u in unreviewed_all
                     if (file_filter.lower() in u.name.lower())
                     and (group_filter is None or u.name in group_filter[1])
                 ]
 
-                # Sort candidates for display
+                # Sort
                 if sort_mode == "hosts":
                     display = sorted(
                         candidates,
-                        key=lambda p: (-get_counts_for(p)[0], natural_key(p.name))
+                        key=lambda p: (-get_counts_for_msf(p)[0], natural_key(p.name))
                     )
                 else:
                     display = sorted(candidates, key=lambda p: natural_key(p.name))
 
-                # Filtering UI (unreviewed)
                 try:
-                    status = f"Unreviewed files ({len(unreviewed)}). Current filter: '{file_filter or '*'}'"
+                    status = f"Unreviewed files ({len(unreviewed_all)}). Current filter: '{file_filter or '*'}'"
                     if group_filter:
                         status += f" | Group filter: #{group_filter[0]} ({len(group_filter[1])})"
                     status += f" | Sort: {'Host count ↓' if sort_mode=='hosts' else 'Name A→Z'}"
@@ -844,40 +1271,40 @@ def main(args):
                     print(fmt_action(actions))
 
                     for i, f in enumerate(display, 1):
+                        sev_label = pretty_severity_label(sev_map[f].name)
                         if sort_mode == "hosts":
-                            hc, _ps = get_counts_for(f)
-                            print(f"[{i}] {f.name}  — hosts: {hc}")
+                            hc, _ps = get_counts_for_msf(f)
+                            print(f"[{i}] {f.name}  — {sev_label}  — hosts: {hc}")
                         else:
-                            print(f"[{i}] {f.name}")
-                    ans = input("Choose a file number, or action: ").strip().lower()
+                            print(f"[{i}] {f.name}  — {sev_label}")
+                    ans3 = input("Choose a file number, or action: ").strip().lower()
                 except KeyboardInterrupt:
                     warn("\nInterrupted — returning to severity menu.")
                     break
 
-                # --- Actions ---
-                if ans in ("b", "back"):
+                if ans3 in ("b", "back"):
                     break
-                if ans == "f":
+                if ans3 == "f":
                     file_filter = input("Enter substring to filter by: ").strip()
                     continue
-                if ans == "c":
+                if ans3 == "c":
                     file_filter = ""
                     continue
-                if ans == "o":
+                if ans3 == "o":
                     sort_mode = "hosts" if sort_mode == "name" else "name"
                     ok(f"Sorting by {'host count (desc)' if sort_mode=='hosts' else 'name (A→Z)'}")
                     continue
-                if ans == "x" and group_filter:
+                if ans3 == "x" and group_filter:
                     group_filter = None
                     ok("Cleared group filter.")
                     continue
-                if ans == "r":
-                    # Reviewed viewer
+                if ans3 == "r":
                     header("Reviewed files (read-only)")
                     print(f"Current filter: '{reviewed_filter or '*'}'")
                     print(fmt_action("[F] Set filter / [C] Clear filter / [B] Back"))
-                    for i, f in enumerate([r for r in reviewed if (reviewed_filter.lower() in r.name.lower())], 1):
-                        print(f"[{i}] {fmt_reviewed(f.name)}")
+                    for i, f in enumerate([r for r in reviewed_all if (reviewed_filter.lower() in r.name.lower())], 1):
+                        sev_label = pretty_severity_label(sev_map[f].name)
+                        print(f"[{i}] {fmt_reviewed(f.name)}  — {sev_label}")
                     try:
                         choice = input("Action or [B]ack: ").strip().lower()
                     except KeyboardInterrupt:
@@ -893,8 +1320,7 @@ def main(args):
                         continue
                     warn("Read-only view; no file selection here.")
                     continue
-                if ans == "m":
-                    # Mark all filtered as REVIEW_COMPLETE
+                if ans3 == "m":
                     if not candidates:
                         warn("No files match the current filter.")
                         continue
@@ -910,13 +1336,11 @@ def main(args):
                             completed_total.append(newp.name)
                     ok(f"Summary: {renamed} renamed, {len(candidates)-renamed} skipped.")
                     continue
-                if ans == "h":
-                    # Compare hosts/ports across filtered files (fresh each time; numbering restarts from 1)
+                if ans3 == "h":
                     if not candidates:
                         warn("No files match the current filter.")
                         continue
-                    groups = compare_filtered(candidates)  # returns groups sorted by size DESC
-                    # Immediate group selection with compact prompt showing only first 5 groups
+                    groups = compare_filtered(candidates)
                     if groups:
                         visible = min(5, len(groups))
                         opts = " | ".join(f"g{i+1}" for i in range(visible))
@@ -932,22 +1356,24 @@ def main(args):
                     continue
 
                 # Default-select top item on Enter
-                if ans == "":
+                if ans3 == "":
                     if not display:
                         warn("No files match the current filter.")
                         continue
                     chosen = display[0]
                 else:
-                    if not ans.isdigit():
+                    if not ans3.isdigit():
                         warn("Please select a file by number, or use actions above.")
                         continue
-                    idx = int(ans) - 1
+                    idx = int(ans3) - 1
                     if idx < 0 or idx >= len(display):
                         warn("Invalid index.")
                         continue
                     chosen = display[idx]
 
-                # Per-file workflow
+                # --- Per-file workflow (with the file's native severity used for artifacts) ---
+                sev_dir_for_file = sev_map[chosen]
+
                 lines = read_text_lines(chosen)
                 tokens = [ln for ln in lines if ln.strip()]
                 if not tokens:
@@ -955,24 +1381,21 @@ def main(args):
                     skipped_total.append(chosen.name)
                     continue
 
-                # Parse hosts/ports
                 hosts, ports_str = parse_hosts_ports(tokens)
                 header("Preview")
-                info(f"File: {chosen.name}")
+                info(f"File: {chosen.name}  — {pretty_severity_label(sev_dir_for_file.name)}")
                 info(f"Hosts parsed: {len(hosts)}")
                 if hosts:
                     info(f"Example host: {hosts[0]}")
                 if ports_str:
                     info(f"Ports detected: {ports_str}")
 
-                # Offer to view file
                 try:
                     if yesno("\nWould you like to view the contents of the selected plugin file? (y/N):", default="n"):
                         safe_print_file(chosen)
                 except KeyboardInterrupt:
                     continue
 
-                # ============ NO-TOOLS MODE SHORT-CIRCUIT ============
                 if args.no_tools:
                     info("(no-tools mode active — skipping tool selection)")
                     try:
@@ -984,9 +1407,7 @@ def main(args):
                     except KeyboardInterrupt:
                         continue
                     continue
-                # =====================================================
 
-                # Run a tool?
                 try:
                     do_scan = yesno("\nRun a tool now? (y/N):", default="n")
                 except KeyboardInterrupt:
@@ -1003,7 +1424,6 @@ def main(args):
                         continue
                     continue
 
-                # Sampling (applies to any tool)
                 sample_hosts = hosts
                 if len(hosts) > 5:
                     try:
@@ -1025,29 +1445,23 @@ def main(args):
                             ok(f"Sampling {k} host(s).")
                             break
 
-                # --- Prepare per-file context ONCE (persists across multiple commands) ---
                 workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
-                # Write both TCP and UDP lists so any tool/custom can reference them
                 tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
 
-                # results base dir stays the same; each run gets a fresh timestamped oabase
-                out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir.name) / Path(chosen.name).stem
+                out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir_for_file.name) / Path(chosen.name).stem
                 out_dir_static.mkdir(parents=True, exist_ok=True)
 
-                # ----- Tool loop: allow running multiple commands in the same context -----
                 while True:
                     tool_choice = choose_tool()
                     if tool_choice is None:
-                        break  # back to file menu
+                        break
 
-                    # Fresh timestamped oabase per run
-                    _tmp_dir, oabase = build_results_paths(scan_dir, sev_dir, chosen.name)
-                    results_dir = out_dir_static  # for clearer prints
+                    _tmp_dir, oabase = build_results_paths(scan_dir, sev_dir_for_file, chosen.name)
+                    results_dir = out_dir_static
 
-                    nxc_relay_path = None  # reset per run
+                    nxc_relay_path = None
 
                     if tool_choice == "nmap":
-                        # Nmap-specific options
                         try:
                             udp_ports = yesno("\nDo you want to perform UDP scanning instead of TCP? (y/N):", default="n")
                         except KeyboardInterrupt:
@@ -1100,7 +1514,6 @@ def main(args):
                         artifact_note = f"NetExec log:   {nxc_log}"
 
                     elif tool_choice == "custom":
-                        # Custom command with placeholders
                         mapping = {
                             "{TCP_IPS}": tcp_ips,
                             "{UDP_IPS}": udp_ips,
@@ -1120,14 +1533,13 @@ def main(args):
                             continue
                         rendered = render_placeholders(template, mapping)
                         display_cmd = rendered
-                        cmd = rendered  # string
+                        cmd = rendered
                         artifact_note = f"OABASE path:   {oabase}"
 
                     else:
                         warn("Unknown tool selection.")
                         continue
 
-                    # Command review
                     action = command_review_menu(display_cmd)
 
                     if action == "copy":
@@ -1142,7 +1554,6 @@ def main(args):
                             if isinstance(cmd, list):
                                 subprocess.run(cmd, check=True)
                             else:
-                                # custom string command
                                 shell_exec = shutil.which("bash") or shutil.which("sh")
                                 subprocess.run(cmd, shell=True, check=True, executable=shell_exec)
                         except KeyboardInterrupt:
@@ -1156,7 +1567,6 @@ def main(args):
                         info("Canceled. Returning to tool menu.")
                         continue
 
-                    # Artifacts for this run
                     header("Artifacts")
                     info(f"Workspace:     {workdir}")
                     info(f" - Hosts:      {workdir / 'tcp_ips.list'}")
@@ -1167,13 +1577,12 @@ def main(args):
                         info(f" - Relay targets: {nxc_relay_path}")
                     info(f" - Results dir:{results_dir}")
 
-                    # Run another command in this same context?
                     try:
                         again = yesno("\nRun another command for this plugin file? (y/N):", default="n")
                     except KeyboardInterrupt:
                         break
                     if not again:
-                        break  # exit tool loop
+                        break
 
                 # After leaving tool loop, optional rename
                 try:
@@ -1184,6 +1593,8 @@ def main(args):
                         reviewed_total.append(chosen.name)
                 except KeyboardInterrupt:
                     continue
+
+            # end of Metasploit Module view
 
     # Session summary
     header("Session Summary")
