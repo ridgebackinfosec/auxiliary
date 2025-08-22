@@ -26,6 +26,23 @@ def fmt_action(text): return f"{C.CYAN}>> {text}{C.RESET}"
 def fmt_reviewed(text): return f"{C.MAGENTA}{text}{C.RESET}"
 def cyan_label(s: str) -> str: return f"{C.CYAN}{s}{C.RESET}"
 
+def colorize_severity_label(label: str) -> str:
+    """Return a bold, colorized severity label for visual pop."""
+    L = label.strip().lower()
+    if "critical" in L:
+        color = C.RED
+    elif "high" in L:
+        color = C.YELLOW
+    elif "medium" in L:
+        color = C.BLUE
+    elif "low" in L:
+        color = C.GREEN
+    elif "info" in L:
+        color = C.CYAN
+    else:
+        color = C.MAGENTA
+    return f"{C.BOLD}{color}{label}{C.RESET}"
+
 def require_cmd(name):
     if shutil.which(name) is None:
         err(f"Required command '{name}' not found on PATH.")
@@ -769,16 +786,16 @@ def main(args):
                 return -(int(m.group(1)) if m else 0), p.name
             severities = sorted(severities, key=sev_key)
 
-            # Compute MSF virtual group
-            msf_files = []  # list of (Path file, Path severity_dir)
+            # Compute MSF virtual group (for menu counts only)
+            msf_files_for_count = []
             for sd in severities:
                 for f in list_files(sd):
                     if f.suffix.lower() == ".txt" and f.name.endswith("-MSF.txt"):
-                        msf_files.append((f, sd))
-            has_msf = len(msf_files) > 0
-            msf_total = len(msf_files)
+                        msf_files_for_count.append((f, sd))
+            has_msf = len(msf_files_for_count) > 0
+            msf_total = len(msf_files_for_count)
             msf_reviewed = sum(
-                1 for (f, _sd) in msf_files
+                1 for (f, _sd) in msf_files_for_count
                 if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))
             )
             msf_unrev = msf_total - msf_reviewed
@@ -1000,6 +1017,9 @@ def main(args):
                     except KeyboardInterrupt:
                         continue
 
+                    # Track if we already asked about marking, to avoid double prompt
+                    completion_decided = False
+
                     # ============ NO-TOOLS MODE SHORT-CIRCUIT ============
                     if args.no_tools:
                         info("(no-tools mode active — skipping tool selection)")
@@ -1009,6 +1029,7 @@ def main(args):
                                 completed_total.append(newp.name if newp != chosen else chosen.name)
                             else:
                                 reviewed_total.append(chosen.name)
+                            completion_decided = True
                         except KeyboardInterrupt:
                             continue
                         continue
@@ -1027,11 +1048,12 @@ def main(args):
                                 completed_total.append(newp.name if newp != chosen else chosen.name)
                             else:
                                 reviewed_total.append(chosen.name)
+                            completion_decided = True
                         except KeyboardInterrupt:
                             continue
-                        continue
+                        continue  # back to file list (skip tool loop and final prompt entirely)
 
-                    # Sampling (applies to any tool)
+                    # --- Prepare per-file context ONCE (persists across multiple commands) ---
                     sample_hosts = hosts
                     if len(hosts) > 5:
                         try:
@@ -1053,7 +1075,6 @@ def main(args):
                                 ok(f"Sampling {k} host(s).")
                                 break
 
-                    # --- Prepare per-file context ONCE (persists across multiple commands) ---
                     workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
                     tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
 
@@ -1061,6 +1082,7 @@ def main(args):
                     out_dir_static.mkdir(parents=True, exist_ok=True)
 
                     # ----- Tool loop: allow running multiple commands in the same context -----
+                    tool_used = False
                     while True:
                         tool_choice = choose_tool()
                         if tool_choice is None:
@@ -1163,6 +1185,7 @@ def main(args):
                                 print(cmd_str)
                         elif action == "run":
                             try:
+                                tool_used = True
                                 if isinstance(cmd, list):
                                     subprocess.run(cmd, check=True)
                                 else:
@@ -1197,23 +1220,24 @@ def main(args):
                         if not again:
                             break  # exit tool loop
 
-                    # After leaving tool loop, optional rename
-                    try:
-                        if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
-                            newp = rename_review_complete(chosen)
-                            completed_total.append(newp.name if newp != chosen else chosen.name)
-                        else:
-                            reviewed_total.append(chosen.name)
-                    except KeyboardInterrupt:
-                        continue
+                    # After leaving tool loop, optional rename (once)
+                    if not completion_decided:
+                        try:
+                            if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                                newp = rename_review_complete(chosen)
+                                completed_total.append(newp.name if newp != chosen else chosen.name)
+                            else:
+                                # If they ran tools but chose not to rename, still count as reviewed
+                                reviewed_total.append(chosen.name)
+                            completion_decided = True
+                        except KeyboardInterrupt:
+                            continue
 
                 # end while True (per-severity)
                 continue  # back to severity menu
 
             # === Metasploit Module (virtual severity) selected ===
-            # msf_files: list of (file_path, sev_dir)
-            sev_map = {f: sd for (f, sd) in msf_files}
-
+            # NOTE: we will re-scan msf files each loop iteration to reflect renames immediately.
             file_filter = ""
             reviewed_filter = ""
             group_filter = None
@@ -1233,6 +1257,14 @@ def main(args):
                 return stats
 
             while True:
+                # RE-SCAN msf files every draw so renames are reflected instantly
+                msf_files = []
+                for sd in severities:
+                    for f in list_files(sd):
+                        if f.suffix.lower() == ".txt" and f.name.endswith("-MSF.txt"):
+                            msf_files.append((f, sd))
+                sev_map = {f: sd for (f, sd) in msf_files}
+
                 header("Severity: Metasploit Module")
                 files_all = [f for (f, _sd) in msf_files if f.suffix.lower() == ".txt"]
                 reviewed_all = [f for f in files_all if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))]
@@ -1272,11 +1304,12 @@ def main(args):
 
                     for i, f in enumerate(display, 1):
                         sev_label = pretty_severity_label(sev_map[f].name)
+                        sev_col = colorize_severity_label(sev_label)
                         if sort_mode == "hosts":
                             hc, _ps = get_counts_for_msf(f)
-                            print(f"[{i}] {f.name}  — {sev_label}  — hosts: {hc}")
+                            print(f"[{i}] {f.name}  — {sev_col}  — hosts: {hc}")
                         else:
-                            print(f"[{i}] {f.name}  — {sev_label}")
+                            print(f"[{i}] {f.name}  — {sev_col}")
                     ans3 = input("Choose a file number, or action: ").strip().lower()
                 except KeyboardInterrupt:
                     warn("\nInterrupted — returning to severity menu.")
@@ -1304,7 +1337,8 @@ def main(args):
                     print(fmt_action("[F] Set filter / [C] Clear filter / [B] Back"))
                     for i, f in enumerate([r for r in reviewed_all if (reviewed_filter.lower() in r.name.lower())], 1):
                         sev_label = pretty_severity_label(sev_map[f].name)
-                        print(f"[{i}] {fmt_reviewed(f.name)}  — {sev_label}")
+                        sev_col = colorize_severity_label(sev_label)
+                        print(f"[{i}] {fmt_reviewed(f.name)}  — {sev_col}")
                     try:
                         choice = input("Action or [B]ack: ").strip().lower()
                     except KeyboardInterrupt:
@@ -1396,6 +1430,8 @@ def main(args):
                 except KeyboardInterrupt:
                     continue
 
+                completion_decided = False
+
                 if args.no_tools:
                     info("(no-tools mode active — skipping tool selection)")
                     try:
@@ -1404,6 +1440,7 @@ def main(args):
                             completed_total.append(newp.name if newp != chosen else chosen.name)
                         else:
                             reviewed_total.append(chosen.name)
+                        completion_decided = True
                     except KeyboardInterrupt:
                         continue
                     continue
@@ -1420,6 +1457,7 @@ def main(args):
                             completed_total.append(newp.name if newp != chosen else chosen.name)
                         else:
                             reviewed_total.append(chosen.name)
+                        completion_decided = True
                     except KeyboardInterrupt:
                         continue
                     continue
@@ -1451,6 +1489,7 @@ def main(args):
                 out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir_for_file.name) / Path(chosen.name).stem
                 out_dir_static.mkdir(parents=True, exist_ok=True)
 
+                tool_used = False
                 while True:
                     tool_choice = choose_tool()
                     if tool_choice is None:
@@ -1551,6 +1590,7 @@ def main(args):
                             print(cmd_str)
                     elif action == "run":
                         try:
+                            tool_used = True
                             if isinstance(cmd, list):
                                 subprocess.run(cmd, check=True)
                             else:
@@ -1584,15 +1624,17 @@ def main(args):
                     if not again:
                         break
 
-                # After leaving tool loop, optional rename
-                try:
-                    if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
-                        newp = rename_review_complete(chosen)
-                        completed_total.append(newp.name if newp != chosen else chosen.name)
-                    else:
-                        reviewed_total.append(chosen.name)
-                except KeyboardInterrupt:
-                    continue
+                # After leaving tool loop, optional rename (once)
+                if not completion_decided:
+                    try:
+                        if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                            newp = rename_review_complete(chosen)
+                            completed_total.append(newp.name if newp != chosen else chosen.name)
+                        else:
+                            reviewed_total.append(chosen.name)
+                        completion_decided = True
+                    except KeyboardInterrupt:
+                        continue
 
             # end of Metasploit Module view
 
