@@ -4,6 +4,7 @@ import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, argparse, t
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict, Counter
+from typing import Any  # ← for relaxed typing on Rich helpers
 
 # === Optional new deps for modern CLI & tracebacks ===
 try:
@@ -446,31 +447,39 @@ def _severity_style(label: str) -> str:
     if "info"     in l: return "cyan"
     return "magenta"
 
-def _rich_severity_cell(label: str) -> "Text":
-    t = Text(label)
-    t.stylize("bold")
-    t.stylize(_severity_style(label))
-    return t
+def _rich_severity_cell(label: str) -> Any:
+    if Text:
+        t = Text(label)
+        t.stylize("bold")
+        t.stylize(_severity_style(label))
+        return t
+    return label
 
-def _rich_unreviewed_cell(n: int) -> "Text":
-    t = Text(str(n))
-    if n == 0:
-        t.stylize("green")
-    elif n <= 10:
-        t.stylize("yellow")
-    else:
-        t.stylize("red")
-    return t
+def _rich_unreviewed_cell(n: int) -> Any:
+    if Text:
+        t = Text(str(n))
+        if n == 0:
+            t.stylize("green")
+        elif n <= 10:
+            t.stylize("yellow")
+        else:
+            t.stylize("red")
+        return t
+    return str(n)
 
-def _rich_reviewed_cell(n: int) -> "Text":
-    t = Text(str(n))
-    t.stylize("magenta")
-    return t
+def _rich_reviewed_cell(n: int) -> Any:
+    if Text:
+        t = Text(str(n))
+        t.stylize("magenta")
+        return t
+    return str(n)
 
-def _rich_total_cell(n: int) -> "Text":
-    t = Text(str(n))
-    t.stylize("bold")
-    return t
+def _rich_total_cell(n: int) -> Any:
+    if Text:
+        t = Text(str(n))
+        t.stylize("bold")
+        return t
+    return str(n)
 
 # ---------- Rich table helpers (scan, severity, files, compare) ----------
 def _render_scan_table(scans):
