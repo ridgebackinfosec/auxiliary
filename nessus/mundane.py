@@ -12,12 +12,14 @@ try:
     from rich.table import Table
     from rich.traceback import install as rich_tb_install
     from rich import box
+    from rich.text import Text  # for proper width-calculated styled cells
 except Exception:
     typer = None
     Console = None
     Table = None
     rich_tb_install = None
     box = None
+    Text = None
 
 # Create a console we can use in interactive flow (even without Typer)
 _console_global = Console() if Console else None
@@ -52,7 +54,7 @@ def fmt_reviewed(text): return f"{C.MAGENTA}{text}{C.RESET}"
 def cyan_label(s: str) -> str: return f"{C.CYAN}{s}{C.RESET}"
 
 def colorize_severity_label(label: str) -> str:
-    """Return a bold, colorized severity label for visual pop."""
+    """Return a bold, colorized severity label for visual pop (ANSI string). Used only in non-table contexts."""
     L = label.strip().lower()
     if "critical" in L:
         color = C.RED
@@ -434,9 +436,205 @@ def _normalize_combos(hosts, ports_set, combos_map, had_explicit):
     ))
     return assumed
 
+# ---------- Rich style helpers for tables ----------
+def _severity_style(label: str) -> str:
+    l = label.strip().lower()
+    if "critical" in l: return "red"
+    if "high"     in l: return "yellow"
+    if "medium"   in l: return "magenta"
+    if "low"      in l: return "green"
+    if "info"     in l: return "cyan"
+    return "magenta"
+
+def _rich_severity_cell(label: str) -> "Text":
+    t = Text(label)
+    t.stylize("bold")
+    t.stylize(_severity_style(label))
+    return t
+
+def _rich_unreviewed_cell(n: int) -> "Text":
+    t = Text(str(n))
+    if n == 0:
+        t.stylize("green")
+    elif n <= 10:
+        t.stylize("yellow")
+    else:
+        t.stylize("red")
+    return t
+
+def _rich_reviewed_cell(n: int) -> "Text":
+    t = Text(str(n))
+    t.stylize("magenta")
+    return t
+
+def _rich_total_cell(n: int) -> "Text":
+    t = Text(str(n))
+    t.stylize("bold")
+    return t
+
+# ---------- Rich table helpers (scan, severity, files, compare) ----------
+def _render_scan_table(scans):
+    """Render the top-level scan selection menu as a table (fallback to plain text)."""
+    if not (Table and _console_global):
+        for i, sdir in enumerate(scans, 1):
+            print(f"[{i}] {sdir.name}")
+        return
+    table = Table(title=None, box=box.SIMPLE if box else None, show_lines=False, pad_edge=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("Scan")
+    for i, sdir in enumerate(scans, 1):
+        table.add_row(str(i), sdir.name)
+    _console_global.print(table)
+
+def _render_severity_table(severities, msf_summary=None):
+    """
+    Render severity menu as a Rich table if available, otherwise print plain text.
+    msf_summary: optional tuple (idx, unrev, rev, total) for the Metasploit Module row.
+    """
+    if not (Table and _console_global and Text):
+        # Plain fallback (keep the existing colored ANSI strings)
+        for i, sd in enumerate(severities, 1):
+            unrev, rev, tot = _count_severity_files(sd)
+            label = pretty_severity_label(sd.name)
+            print(f"[{i}] {label} — unreviewed: {_color_unreviewed(unrev)} | reviewed: {fmt_reviewed(rev)} | total: {tot}")
+        if msf_summary:
+            idx, unrev, rev, tot = msf_summary
+            print(f"[{idx}] Metasploit Module — unreviewed: {_color_unreviewed(unrev)} | reviewed: {fmt_reviewed(rev)} | total: {tot}")
+        return
+
+    table = Table(title=None, box=box.SIMPLE if box else None, show_lines=False, pad_edge=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("Severity", no_wrap=True)
+    table.add_column("Unreviewed", justify="right", no_wrap=True)
+    table.add_column("Reviewed", justify="right", no_wrap=True)
+    table.add_column("Total", justify="right", no_wrap=True)
+
+    for i, sd in enumerate(severities, 1):
+        unrev, rev, tot = _count_severity_files(sd)
+        label = pretty_severity_label(sd.name)
+        table.add_row(
+            str(i),
+            _rich_severity_cell(label),
+            _rich_unreviewed_cell(unrev),
+            _rich_reviewed_cell(rev),
+            _rich_total_cell(tot),
+        )
+
+    if msf_summary:
+        idx, unrev, rev, tot = msf_summary
+        table.add_row(
+            str(idx),
+            _rich_severity_cell("Metasploit Module"),
+            _rich_unreviewed_cell(unrev),
+            _rich_reviewed_cell(rev),
+            _rich_total_cell(tot),
+        )
+
+    _console_global.print(table)
+
+def _render_file_list_table(display, sort_mode, get_counts_for):
+    """
+    Render file list (unreviewed) as a Rich table if available, otherwise print plain text.
+    display: list[Path]
+    """
+    if not (Table and _console_global):
+        for i, f in enumerate(display, 1):
+            if sort_mode == "hosts":
+                hc, _ps = get_counts_for(f)
+                print(f"[{i}] {f.name}  — hosts: {hc}")
+            else:
+                print(f"[{i}] {f.name}")
+        return
+
+    table = Table(title=None, box=box.SIMPLE if box else None, show_lines=False, pad_edge=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("File")
+    if sort_mode == "hosts":
+        table.add_column("Hosts", justify="right", no_wrap=True)
+
+    for i, f in enumerate(display, 1):
+        if sort_mode == "hosts":
+            hc, _ps = get_counts_for(f)
+            table.add_row(str(i), f.name, str(hc))
+        else:
+            table.add_row(str(i), f.name)
+
+    _console_global.print(table)
+
+def _render_compare_tables(parsed, host_intersection, host_union, port_intersection, port_union, same_hosts, same_ports, same_combos, groups_sorted):
+    """Pretty tables for the comparison view (fallback to plain text if Rich unavailable)."""
+    # parsed: list of tuples (Path, hosts, ports_set, combos, had_explicit)
+    if not (Table and _console_global):
+        # Fallback: keep existing text summary
+        if same_hosts and same_ports and same_combos:
+            ok("All filtered files target the SAME hosts and ports (identical host:port combinations).")
+        else:
+            warn("Filtered files are NOT identical.")
+            info(f"- Same hosts across all:  {same_hosts}")
+            info(f"- Same ports across all:  {same_ports}")
+            info(f"- Same host:port combos:  {same_combos}")
+
+        info(f"\nHosts: intersection={len(host_intersection)}  union={len(host_union)}")
+        if host_intersection:
+            info("  ⋂ Example: " + ", ".join(list(sorted(host_intersection))[:5]) + (" ..." if len(host_intersection) > 5 else ""))
+        if host_union:
+            info("  ⋃ Example: " + ", ".join(list(sorted(host_union))[:5]) + (" ..." if len(host_union) > 5 else ""))
+        info(f"Ports: intersection={len(port_intersection)}  union={len(port_union)}")
+        if port_union:
+            info("  ⋃ Ports: " + ", ".join(sorted(port_union, key=lambda x: int(x))))
+
+        if len(groups_sorted) > 1:
+            header("Groups (files with identical host:port combos)")
+            for i, names in enumerate(groups_sorted, 1):
+                info(f"[Group {i}] {len(names)} file(s)")
+                for nm in names[:6]:
+                    info(f"  - {nm}")
+                if len(names) > 6:
+                    info(f"  - ... (+{len(names)-6} more)")
+        else:
+            info("\nAll filtered files fall into a single identical group.")
+        return
+
+    # Summary table (SAME/DIFF and set sizes)
+    summary = Table(title=None, box=box.SIMPLE if box else None, show_lines=False, pad_edge=False)
+    summary.add_column("Aspect")
+    summary.add_column("Equal Across Files", justify="center", no_wrap=True)
+    summary.add_column("Intersection Size", justify="right", no_wrap=True)
+    summary.add_column("Union Size", justify="right", no_wrap=True)
+    summary.add_row("Hosts", "✅" if same_hosts else "❌", str(len(host_intersection)), str(len(host_union)))
+    summary.add_row("Ports", "✅" if same_ports else "❌", str(len(port_intersection)), str(len(port_union)))
+    summary.add_row("Host:Port Combos", "✅" if same_combos else "❌", "-", "-")
+    _console_global.print(summary)
+
+    # Per-file quick view
+    files_tbl = Table(title="Filtered Files", box=box.SIMPLE if box else None, show_lines=False, pad_edge=False)
+    files_tbl.add_column("#", justify="right", no_wrap=True)
+    files_tbl.add_column("File")
+    files_tbl.add_column("Hosts", justify="right", no_wrap=True)
+    files_tbl.add_column("Ports", justify="right", no_wrap=True)
+    files_tbl.add_column("Explicit combos?", justify="center", no_wrap=True)
+
+    for i, (f, hosts, ports_set, combos, had_explicit) in enumerate(parsed, 1):
+        files_tbl.add_row(str(i), f.name, str(len(hosts)), str(len(ports_set)), "Yes" if had_explicit else "No")
+
+    _console_global.print(files_tbl)
+
+    # Groups table
+    if len(groups_sorted) > 1:
+        groups = Table(title="Identical Host:Port Groups", box=box.SIMPLE if box else None, show_lines=False, pad_edge=False)
+        groups.add_column("#", justify="right", no_wrap=True)
+        groups.add_column("File count", justify="right", no_wrap=True)
+        groups.add_column("Files (sample)")
+        for i, names in enumerate(groups_sorted, 1):
+            sample = "\n".join(names[:8]) + (f"\n... (+{len(names)-8} more)" if len(names) > 8 else "")
+            groups.add_row(str(i), str(len(names)), sample)
+        _console_global.print(groups)
+    else:
+        info("\nAll filtered files fall into a single identical group.")
+
 def compare_filtered(files):
     """
-    Print a concise comparison report for the given plugin files.
+    Pretty comparison report for the given plugin files.
     Returns: list[list[str]] groups, sorted by size DESC (each inner list is file names in that group).
     """
     if not files:
@@ -469,43 +667,20 @@ def compare_filtered(files):
     same_ports  = all(sig == port_sigs[0] for sig in port_sigs) if port_sigs else True
     same_combos = all(sig == combo_sigs[0] for sig in combo_sigs) if combo_sigs else True
 
-    # Summary
-    if same_hosts and same_ports and same_combos:
-        ok("All filtered files target the SAME hosts and ports (identical host:port combinations).")
-    else:
-        warn("Filtered files are NOT identical.")
-        info(f"- Same hosts across all:  {same_hosts}")
-        info(f"- Same ports across all:  {same_ports}")
-        info(f"- Same host:port combos:  {same_combos}")
-
-    # Show quick stats
-    info(f"\nHosts: intersection={len(host_intersection)}  union={len(host_union)}")
-    if host_intersection:
-        info("  ⋂ Example: " + ", ".join(list(sorted(host_intersection))[:5]) + (" ..." if len(host_intersection) > 5 else ""))
-    if host_union:
-        info("  ⋃ Example: " + ", ".join(list(sorted(host_union))[:5]) + (" ..." if len(host_union) > 5 else ""))
-    info(f"Ports: intersection={len(port_intersection)}  union={len(port_union)}")
-    if port_union:
-        info("  ⋃ Ports: " + ", ".join(sorted(port_union, key=lambda x: int(x))))
-
     # Group files by identical combo signature
     groups_dict = defaultdict(list)
     for (f, h, p, c, e), sig in zip(parsed, combo_sigs):
         groups_dict[sig].append(f.name)
 
-    # Sort groups by size (desc). Restart numbering from 1 every run.
     groups_sorted = sorted(groups_dict.values(), key=lambda names: len(names), reverse=True)
 
-    if len(groups_sorted) > 1:
-        header("Groups (files with identical host:port combos)")
-        for i, names in enumerate(groups_sorted, 1):
-            info(f"[Group {i}] {len(names)} file(s)")
-            for nm in names[:6]:
-                info(f"  - {nm}")
-            if len(names) > 6:
-                info(f"  - ... (+{len(names)-6} more)")
-    else:
-        info("\nAll filtered files fall into a single identical group.")
+    # Render pretty tables (or fallback)
+    _render_compare_tables(
+        parsed,
+        host_intersection, host_union, port_intersection, port_union,
+        same_hosts, same_ports, same_combos,
+        groups_sorted
+    )
 
     # Return groups as list of lists (sorted)
     return groups_sorted
@@ -704,70 +879,6 @@ def print_grouped_hosts_ports(path: Path):
     except Exception as e:
         warn(f"Error grouping hosts/ports: {e}")
 
-# ---------- Rich table helpers (severity & files) ----------
-def _render_severity_table(severities, msf_summary=None):
-    """
-    Render severity menu as a Rich table if available, otherwise print plain text.
-    msf_summary: optional tuple (idx, unrev, rev, total) for the Metasploit Module row.
-    """
-    if not (Table and _console_global):
-        # Plain fallback
-        for i, sd in enumerate(severities, 1):
-            unrev, rev, tot = _count_severity_files(sd)
-            label = pretty_severity_label(sd.name)
-            print(f"[{i}] {label} — unreviewed: {_color_unreviewed(unrev)} | reviewed: {fmt_reviewed(rev)} | total: {tot}")
-        if msf_summary:
-            idx, unrev, rev, tot = msf_summary
-            print(f"[{idx}] Metasploit Module — unreviewed: {_color_unreviewed(unrev)} | reviewed: {fmt_reviewed(rev)} | total: {tot}")
-        return
-
-    table = Table(title=None, box=box.SIMPLE if box else None, show_lines=False, pad_edge=False)
-    table.add_column("#", justify="right", no_wrap=True)
-    table.add_column("Severity", no_wrap=True)
-    table.add_column("Unreviewed", justify="right", no_wrap=True)
-    table.add_column("Reviewed", justify="right", no_wrap=True)
-    table.add_column("Total", justify="right", no_wrap=True)
-
-    for i, sd in enumerate(severities, 1):
-        unrev, rev, tot = _count_severity_files(sd)
-        label = pretty_severity_label(sd.name)
-        table.add_row(str(i), colorize_severity_label(label), _color_unreviewed(unrev), fmt_reviewed(str(rev)), str(tot))
-
-    if msf_summary:
-        idx, unrev, rev, tot = msf_summary
-        table.add_row(str(idx), colorize_severity_label("Metasploit Module"), _color_unreviewed(unrev), fmt_reviewed(str(rev)), str(tot))
-
-    _console_global.print(table)
-
-def _render_file_list_table(display, sort_mode, get_counts_for):
-    """
-    Render file list (unreviewed) as a Rich table if available, otherwise print plain text.
-    display: list[Path]
-    """
-    if not (Table and _console_global):
-        for i, f in enumerate(display, 1):
-            if sort_mode == "hosts":
-                hc, _ps = get_counts_for(f)
-                print(f"[{i}] {f.name}  — hosts: {hc}")
-            else:
-                print(f"[{i}] {f.name}")
-        return
-
-    table = Table(title=None, box=box.SIMPLE if box else None, show_lines=False, pad_edge=False)
-    table.add_column("#", justify="right", no_wrap=True)
-    table.add_column("File")
-    if sort_mode == "hosts":
-        table.add_column("Hosts", justify="right", no_wrap=True)
-
-    for i, f in enumerate(display, 1):
-        if sort_mode == "hosts":
-            hc, _ps = get_counts_for(f)
-            table.add_row(str(i), f.name, str(hc))
-        else:
-            table.add_row(str(i), f.name)
-
-    _console_global.print(table)
-
 # ========== Tool selection ==========
 def choose_tool():
     header("Choose a tool")
@@ -861,8 +972,7 @@ def main(args):
             err("No scan directories found.")
             return
         header("Select a scan")
-        for i, sdir in enumerate(scans, 1):
-            print(f"[{i}] {sdir.name}")
+        _render_scan_table(scans)
         print(fmt_action("[X] Exit"))
         try:
             ans = input("Choose: ").strip().lower()
@@ -1831,22 +1941,9 @@ if typer:
             raise typer.Exit(1)
         groups = compare_filtered(files)
         if Table is None:
-            # Fallback plain print
-            header("Groups")
-            for i, names in enumerate(groups, 1):
-                info(f"[{i}] {len(names)} file(s)")
-                for nm in names[:8]:
-                    info(f"  - {nm}")
-                if len(names) > 8:
-                    info(f"  - ... (+{len(names)-8} more)")
+            # Fallback plain print (compare_filtered already printed details)
             return
-        table = Table(title="Identical Host:Port Groups", show_lines=False)
-        table.add_column("#", justify="right", no_wrap=True)
-        table.add_column("Files (sample)")
-        for i, names in enumerate(groups, 1):
-            sample = "\n".join(names[:8]) + (f"\n... (+{len(names)-8} more)" if len(names) > 8 else "")
-            table.add_row(str(i), sample)
-        _console.print(table)
+        # compare_filtered already prints Rich tables; nothing else to do here.
 
     @app.command(help="Show a scan summary for a scan directory.")
     def summary(
