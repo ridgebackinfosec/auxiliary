@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 # mundane.py
-import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, argparse
+import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, argparse, types
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict, Counter
+
+# === Optional new deps for modern CLI ===
+try:
+    import typer
+    from rich.console import Console
+    from rich.table import Table
+except Exception:
+    typer = None
+    Console = None
+    Table = None
 
 # ========== Colors & helpers ==========
 NO_COLOR = (os.environ.get("NO_COLOR") is not None) or (os.environ.get("TERM") == "dumb")
@@ -227,7 +237,6 @@ def build_netexec_cmd(exec_bin: str, protocol: str, ips_file: Path, oabase: Path
     log_path = f"{str(oabase)}.nxc.{protocol}.log"
     relay_path = None
     if protocol == "smb":
-        # Write the relay list next to other run artifacts
         relay_path = f"{str(oabase)}.SMB_Signing_not_required_targets.txt"
         cmd = [
             exec_bin, "smb", str(ips_file),
@@ -1679,7 +1688,11 @@ def main(args):
             print(f" - {n}")
     ok("Done.")
 
-if __name__ == "__main__":
+# ------------------------------
+# Modern CLI wrapper (Typer/Rich)
+# ------------------------------
+def legacy_entry():
+    """Original argparse entrypoint preserved as a subcommand."""
     parser = argparse.ArgumentParser(description="Review Nessus plugin host files and optionally run tools.")
     parser.add_argument("export_root", nargs="?", default="./nessus_plugin_hosts",
                         help="Root directory containing scan folders (default: ./nessus_plugin_hosts)")
@@ -1690,3 +1703,102 @@ if __name__ == "__main__":
         main(args)
     except KeyboardInterrupt:
         warn("\nInterrupted — goodbye.")
+
+# Build Typer app only if available
+if typer:
+    app = typer.Typer(no_args_is_help=True, add_completion=True, help="mundane — faster review & tooling runner")
+    _console = Console()
+
+    @app.callback()
+    def _root():
+        """Modern CLI for mundane. Use `legacy` to run the original interactive TUI."""
+        return
+
+    @app.command(help="Run the original interactive TUI (legacy behavior).")
+    def legacy(
+        export_root: Path = typer.Argument(Path("./nessus_plugin_hosts")),
+        no_tools: bool = typer.Option(False, help="Disable tool prompts (review-only)."),
+    ):
+        args = types.SimpleNamespace(export_root=str(export_root), no_tools=no_tools)
+        try:
+            main(args)
+        except KeyboardInterrupt:
+            warn("\nInterrupted — goodbye.")
+
+    @app.command(help="Interactive review (calls the existing flow).")
+    def review(
+        export_root: Path = typer.Option(Path("./nessus_plugin_hosts"), "--export-root", "-r", help="Scan exports root."),
+        no_tools: bool = typer.Option(False, "--no-tools", help="Disable tool prompts (review-only)."),
+    ):
+        args = types.SimpleNamespace(export_root=str(export_root), no_tools=no_tools)
+        try:
+            main(args)
+        except KeyboardInterrupt:
+            warn("\nInterrupted — goodbye.")
+
+    @app.command(help="Preview a plugin file (raw or grouped).")
+    def view(
+        file: Path = typer.Argument(..., exists=True, readable=True),
+        grouped: bool = typer.Option(False, "--grouped", "-g", help="Show host:port,port,..."),
+    ):
+        if grouped:
+            print_grouped_hosts_ports(file)
+        else:
+            safe_print_file(file)
+
+    @app.command(help="Compare plugin files and group identical host:port combos.")
+    def compare(
+        paths: list[str] = typer.Argument(..., help="Files/dirs/globs to compare (e.g., '4_Critical/*.txt').")
+    ):
+        # Expand inputs
+        out: list[Path] = []
+        for p in paths:
+            pp = Path(p)
+            if pp.is_dir():
+                out.extend([f for f in pp.rglob("*.txt")])
+            else:
+                if any(ch in p for ch in ["*", "?", "["]):
+                    out.extend([Path(x) for x in map(str, Path().glob(p)) if str(x).endswith(".txt")])
+                else:
+                    out.append(pp)
+        files = [f for f in out if f.exists()]
+        if not files:
+            err("No plugin files found for comparison.")
+            raise typer.Exit(1)
+        groups = compare_filtered(files)
+        if Table is None:
+            # Fallback plain print
+            header("Groups")
+            for i, names in enumerate(groups, 1):
+                info(f"[{i}] {len(names)} file(s)")
+                for nm in names[:8]:
+                    info(f"  - {nm}")
+                if len(names) > 8:
+                    info(f"  - ... (+{len(names)-8} more)")
+            return
+        table = Table(title="Identical Host:Port Groups", show_lines=False)
+        table.add_column("#", justify="right", no_wrap=True)
+        table.add_column("Files (sample)")
+        for i, names in enumerate(groups, 1):
+            sample = "\n".join(names[:8]) + (f"\n... (+{len(names)-8} more)" if len(names) > 8 else "")
+            table.add_row(str(i), sample)
+        _console.print(table)
+
+    @app.command(help="Show a scan summary for a scan directory.")
+    def summary(
+        scan_dir: Path = typer.Argument(..., exists=True, dir_okay=True, file_okay=False),
+        top_ports: int = typer.Option(5, "--top-ports", "-n", min=1, help="How many top ports to show."),
+    ):
+        show_scan_summary(scan_dir, top_ports_n=top_ports)
+
+if __name__ == "__main__":
+    # If Typer is available and user didn't explicitly ask for argparse path, run the modern CLI.
+    if typer and (len(sys.argv) == 1 or (len(sys.argv) > 1 and sys.argv[1] != "legacy")):
+        # If user passed 'legacy', we strip it below; otherwise, Typer takes over.
+        app()
+    else:
+        # Fallback to original argparse mode (or explicit `legacy`).
+        if len(sys.argv) > 1 and sys.argv[1] == "legacy":
+            # strip the 'legacy' token so argparse sees the real args
+            sys.argv.pop(1)
+        legacy_entry()
