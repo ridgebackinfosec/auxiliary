@@ -5,15 +5,25 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict, Counter
 
-# === Optional new deps for modern CLI ===
+# === Optional new deps for modern CLI & tracebacks ===
 try:
     import typer
     from rich.console import Console
     from rich.table import Table
+    from rich.traceback import install as rich_tb_install
 except Exception:
     typer = None
     Console = None
     Table = None
+    rich_tb_install = None
+
+# Install pretty tracebacks if Rich is available
+if 'rich_tb_install' in globals() and rich_tb_install:
+    try:
+        # Avoid dumping local variables (may contain creds/tokens)
+        rich_tb_install(show_locals=False)
+    except Exception:
+        pass
 
 # ========== Colors & helpers ==========
 NO_COLOR = (os.environ.get("NO_COLOR") is not None) or (os.environ.get("TERM") == "dumb")
