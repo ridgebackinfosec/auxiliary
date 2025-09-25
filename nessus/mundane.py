@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # mundane.py
-import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, argparse, types
+import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, argparse, types, math
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict, Counter
@@ -481,6 +481,18 @@ def _rich_total_cell(n: int) -> Any:
         return t
     return str(n)
 
+# ---------- Pager helpers ----------
+def _default_page_size() -> int:
+    """
+    Heuristic page size based on terminal height.
+    Reserves ~10 lines for headers/prompts; never below 8.
+    """
+    try:
+        h = shutil.get_terminal_size((80, 24)).lines
+        return max(8, h - 10)
+    except Exception:
+        return 12
+
 # ---------- Rich table helpers (scan, severity, files, compare) ----------
 def _render_scan_table(scans):
     """Render the top-level scan selection menu as a table (fallback to plain text)."""
@@ -541,18 +553,20 @@ def _render_severity_table(severities, msf_summary=None):
 
     _console_global.print(table)
 
-def _render_file_list_table(display, sort_mode, get_counts_for):
+def _render_file_list_table(display, sort_mode, get_counts_for, row_offset: int = 0):
     """
-    Render file list (unreviewed) as a Rich table if available, otherwise print plain text.
-    display: list[Path]
+    Render (a page of) the file list as a Rich table if available, otherwise print plain text.
+    display: list[Path] for this page
+    row_offset: starting index offset so numbering remains global across pages
     """
     if not (Table and _console_global):
         for i, f in enumerate(display, 1):
+            n = row_offset + i
             if sort_mode == "hosts":
                 hc, _ps = get_counts_for(f)
-                print(f"[{i}] {f.name}  — hosts: {hc}")
+                print(f"[{n}] {f.name}  — hosts: {hc}")
             else:
-                print(f"[{i}] {f.name}")
+                print(f"[{n}] {f.name}")
         return
 
     table = Table(title=None, box=box.SIMPLE if box else None, show_lines=False, pad_edge=False)
@@ -562,11 +576,12 @@ def _render_file_list_table(display, sort_mode, get_counts_for):
         table.add_column("Hosts", justify="right", no_wrap=True)
 
     for i, f in enumerate(display, 1):
+        n = row_offset + i
         if sort_mode == "hosts":
             hc, _ps = get_counts_for(f)
-            table.add_row(str(i), f.name, str(hc))
+            table.add_row(str(n), f.name, str(hc))
         else:
-            table.add_row(str(i), f.name)
+            table.add_row(str(n), f.name)
 
     _console_global.print(table)
 
@@ -1055,6 +1070,9 @@ def main(args):
                 group_filter = None  # (group_index:int, names:set[str]) — resets whenever you enter a severity
                 sort_mode = "name"   # "name" or "hosts"
                 file_parse_cache = {}  # Path -> (host_count:int, ports_str:str) for this severity view
+                # Pager state
+                page_size = _default_page_size()
+                page_idx = 0
 
                 def get_counts_for(path: Path):
                     if path in file_parse_cache:
@@ -1090,12 +1108,21 @@ def main(args):
                     else:
                         display = sorted(candidates, key=lambda p: natural_key(p.name))
 
+                    # --- pager compute ---
+                    total_pages = max(1, math.ceil(len(display) / page_size)) if page_size > 0 else 1
+                    if page_idx >= total_pages:
+                        page_idx = total_pages - 1
+                    start = page_idx * page_size
+                    end = start + page_size
+                    page_items = display[start:end]
+
                     # Filtering UI (unreviewed)
                     try:
                         status = f"Unreviewed files ({len(unreviewed)}). Current filter: '{file_filter or '*'}'"
                         if group_filter:
                             status += f" | Group filter: #{group_filter[0]} ({len(group_filter[1])})"
                         status += f" | Sort: {'Host count ↓' if sort_mode=='hosts' else 'Name A→Z'}"
+                        status += f" | Page: {page_idx+1}/{total_pages}"
                         print(status)
 
                         actions = "[F] Set filter / [C] Clear filter / [R] View reviewed files / "
@@ -1104,11 +1131,11 @@ def main(args):
                         actions += "[O] Toggle sort / "
                         if group_filter:
                             actions += "[X] Clear group filter / "
-                        actions += "[B] Back / [Enter] Open first match"
+                        actions += "[N] Next page / [P] Prev page / [B] Back / [Enter] Open first match"
                         print(fmt_action(actions))
 
                         # --- Rich file list rendering (with fallback) ---
-                        _render_file_list_table(display, sort_mode, get_counts_for)
+                        _render_file_list_table(page_items, sort_mode, get_counts_for, row_offset=start)
 
                         ans2 = input("Choose a file number, or action: ").strip().lower()
                     except KeyboardInterrupt:
@@ -1118,22 +1145,38 @@ def main(args):
                     # --- Actions ---
                     if ans2 in ("b", "back"):
                         break
+                    if ans2 == "n":
+                        if page_idx + 1 < total_pages:
+                            page_idx += 1
+                        else:
+                            warn("Already at last page.")
+                        continue
+                    if ans2 == "p":
+                        if page_idx > 0:
+                            page_idx -= 1
+                        else:
+                            warn("Already at first page.")
+                        continue
                     if ans2 == "f":
                         file_filter = input("Enter substring to filter by: ").strip()
+                        page_idx = 0
                         continue
                     if ans2 == "c":
                         file_filter = ""
+                        page_idx = 0
                         continue
                     if ans2 == "o":
                         sort_mode = "hosts" if sort_mode == "name" else "name"
                         ok(f"Sorting by {'host count (desc)' if sort_mode=='hosts' else 'name (A→Z)'}")
+                        page_idx = 0
                         continue
                     if ans2 == "x" and group_filter:
                         group_filter = None
                         ok("Cleared group filter.")
+                        page_idx = 0
                         continue
                     if ans2 == "r":
-                        # Reviewed viewer
+                        # Reviewed viewer (no pager for now)
                         header("Reviewed files (read-only)")
                         print(f"Current filter: '{reviewed_filter or '*'}'")
                         print(fmt_action("[F] Set filter / [C] Clear filter / [B] Back"))
@@ -1189,23 +1232,24 @@ def main(args):
                                 if 0 <= idx < len(groups):
                                     group_filter = (idx + 1, set(groups[idx]))
                                     ok(f"Applied group filter #{idx+1} ({len(groups[idx])} files).")
+                                    page_idx = 0
                         continue
 
                     # Default-select top item on Enter
                     if ans2 == "":
-                        if not display:
-                            warn("No files match the current filter.")
+                        if not page_items:
+                            warn("No files match the current page/filter.")
                             continue
-                        chosen = display[0]
+                        chosen = page_items[0]
                     else:
                         if not ans2.isdigit():
                             warn("Please select a file by number, or use actions above.")
                             continue
-                        idx = int(ans2) - 1
-                        if idx < 0 or idx >= len(display):
+                        global_idx = int(ans2) - 1
+                        if global_idx < 0 or global_idx >= len(display):
                             warn("Invalid index.")
                             continue
-                        chosen = display[idx]
+                        chosen = display[global_idx]
 
                     # Per-file workflow
                     lines = read_text_lines(chosen)
@@ -1455,12 +1499,14 @@ def main(args):
                 continue  # back to severity menu
 
             # === Metasploit Module (virtual severity) selected ===
-            # NOTE: we will re-scan msf files each loop iteration to reflect renames immediately.
             file_filter = ""
             reviewed_filter = ""
             group_filter = None
             sort_mode = "name"
             file_parse_cache = {}
+            # Pager state
+            page_size = _default_page_size()
+            page_idx = 0
 
             def get_counts_for_msf(path: Path):
                 if path in file_parse_cache:
@@ -1504,11 +1550,20 @@ def main(args):
                 else:
                     display = sorted(candidates, key=lambda p: natural_key(p.name))
 
+                # --- pager compute ---
+                total_pages = max(1, math.ceil(len(display) / page_size)) if page_size > 0 else 1
+                if page_idx >= total_pages:
+                    page_idx = total_pages - 1
+                start = page_idx * page_size
+                end = start + page_size
+                page_items = display[start:end]
+
                 try:
                     status = f"Unreviewed files ({len(unreviewed_all)}). Current filter: '{file_filter or '*'}'"
                     if group_filter:
                         status += f" | Group filter: #{group_filter[0]} ({len(group_filter[1])})"
                     status += f" | Sort: {'Host count ↓' if sort_mode=='hosts' else 'Name A→Z'}"
+                    status += f" | Page: {page_idx+1}/{total_pages}"
                     print(status)
 
                     actions = "[F] Set filter / [C] Clear filter / [R] View reviewed files / "
@@ -1517,11 +1572,11 @@ def main(args):
                     actions += "[O] Toggle sort / "
                     if group_filter:
                         actions += "[X] Clear group filter / "
-                    actions += "[B] Back / [Enter] Open first match"
+                    actions += "[N] Next page / [P] Prev page / [B] Back / [Enter] Open first match"
                     print(fmt_action(actions))
 
                     # Render table (with fallback)
-                    _render_file_list_table(display, sort_mode, get_counts_for_msf)
+                    _render_file_list_table(page_items, sort_mode, get_counts_for_msf, row_offset=start)
 
                     ans3 = input("Choose a file number, or action: ").strip().lower()
                 except KeyboardInterrupt:
@@ -1530,19 +1585,35 @@ def main(args):
 
                 if ans3 in ("b", "back"):
                     break
+                if ans3 == "n":
+                    if page_idx + 1 < total_pages:
+                        page_idx += 1
+                    else:
+                        warn("Already at last page.")
+                    continue
+                if ans3 == "p":
+                    if page_idx > 0:
+                        page_idx -= 1
+                    else:
+                        warn("Already at first page.")
+                    continue
                 if ans3 == "f":
                     file_filter = input("Enter substring to filter by: ").strip()
+                    page_idx = 0
                     continue
                 if ans3 == "c":
                     file_filter = ""
+                    page_idx = 0
                     continue
                 if ans3 == "o":
                     sort_mode = "hosts" if sort_mode == "name" else "name"
                     ok(f"Sorting by {'host count (desc)' if sort_mode=='hosts' else 'name (A→Z)'}")
+                    page_idx = 0
                     continue
                 if ans3 == "x" and group_filter:
                     group_filter = None
                     ok("Cleared group filter.")
+                    page_idx = 0
                     continue
                 if ans3 == "r":
                     header("Reviewed files (read-only)")
@@ -1600,23 +1671,24 @@ def main(args):
                             if 0 <= idx < len(groups):
                                 group_filter = (idx + 1, set(groups[idx]))
                                 ok(f"Applied group filter #{idx+1} ({len(groups[idx])} files).")
+                                page_idx = 0
                     continue
 
                 # Default-select top item on Enter
                 if ans3 == "":
-                    if not display:
-                        warn("No files match the current filter.")
+                    if not page_items:
+                        warn("No files match the current page/filter.")
                         continue
-                    chosen = display[0]
+                    chosen = page_items[0]
                 else:
                     if not ans3.isdigit():
                         warn("Please select a file by number, or use actions above.")
                         continue
-                    idx = int(ans3) - 1
-                    if idx < 0 or idx >= len(display):
+                    global_idx = int(ans3) - 1
+                    if global_idx < 0 or global_idx >= len(display):
                         warn("Invalid index.")
                         continue
-                    chosen = display[idx]
+                    chosen = display[global_idx]
 
                 # --- Per-file workflow (with the file's native severity used for artifacts) ---
                 sev_dir_for_file = sev_map[chosen]
