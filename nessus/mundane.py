@@ -662,6 +662,24 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
         sizes = sorted(multi_clusters, reverse=True)[:3]
         info("  " + cyan_label("Largest clusters:") + " " + ", ".join(f"{n} files" for n in sizes))
 
+# === New: grouped host:ports printer ===
+def print_grouped_hosts_ports(path: Path):
+    """Print file contents grouped by host with all ports consolidated."""
+    try:
+        hosts, _ports, combos, _had_explicit = parse_file_hosts_ports_detailed(path)
+        if not hosts:
+            warn(f"No hosts found in {path}")
+            return
+        header(f"Grouped view: {path.name}")
+        for h in hosts:
+            plist = sorted(combos[h], key=lambda x: int(x)) if combos[h] else []
+            if plist:
+                print(f"{h}:{','.join(plist)}")
+            else:
+                print(h)
+    except Exception as e:
+        warn(f"Error grouping hosts/ports: {e}")
+
 # ========== Tool selection ==========
 def choose_tool():
     header("Choose a tool")
@@ -1010,12 +1028,15 @@ def main(args):
                     if ports_str:
                         info(f"Ports detected: {ports_str}")
 
-                    # Offer to view file
+                    # Offer to view file (Raw / Grouped / None)
                     try:
-                        if yesno("\nWould you like to view the contents of the selected plugin file? (y/N):", default="n"):
-                            safe_print_file(chosen)
+                        view_choice = input("\nView file? [R]aw / [G]rouped / [N]one (default=N): ").strip().lower()
                     except KeyboardInterrupt:
                         continue
+                    if view_choice in ("r", "raw"):
+                        safe_print_file(chosen)
+                    elif view_choice in ("g", "grouped"):
+                        print_grouped_hosts_ports(chosen)
 
                     # Track if we already asked about marking, to avoid double prompt
                     completion_decided = False
@@ -1424,11 +1445,15 @@ def main(args):
                 if ports_str:
                     info(f"Ports detected: {ports_str}")
 
+                # Offer to view file (Raw / Grouped / None)
                 try:
-                    if yesno("\nWould you like to view the contents of the selected plugin file? (y/N):", default="n"):
-                        safe_print_file(chosen)
+                    view_choice = input("\nView file? [R]aw / [G]rouped / [N]one (default=N): ").strip().lower()
                 except KeyboardInterrupt:
                     continue
+                if view_choice in ("r", "raw"):
+                    safe_print_file(chosen)
+                elif view_choice in ("g", "grouped"):
+                    print_grouped_hosts_ports(chosen)
 
                 completion_decided = False
 
