@@ -1,111 +1,126 @@
-# auxiliary
+# Ridgeback InfoSec — auxiliary scripts/tools
 
-## mundane.py
+Collection of small, zero-dependency Python3 utilities used for reconnaissance, list processing, and local tooling. Each folder contains single-file tools intended to be runnable directly with `python3 <path/to/script>.py`. These are minimal: no pip packages required (stdlib only).
 
-Small TUI helper to **review Nessus plugin host files** quickly and (optionally) kick off focused checks with **nmap** or **NetExec**—all with **zero Python deps**.
-
-**Goal:** make it fast to review Nessus “host/port” plugin files and launch sensible `nmap` runs with saved artifacts.
+Tested with Python 3.8+. Use `python3` (or `python`) to run.
 
 ---
 
-### Requirements
+## Folder summary & quick examples
 
-* Python 3.8+
-* The exported Nessus files via [NessusPluginHosts.py](https://github.com/DefensiveOrigins/NessusPluginHosts).
-  
-`python NessusPluginHosts.py -f scan.nessus --list-plugins --export-plugin-hosts ./nessus_plugin_hosts`
+### `dns/`  
+Tools for reverse lookups and Domain Controller discovery.
 
-### Safety & Options
+- `dns/reverse_dns.py` — Perform reverse DNS lookups and/or produce hostnames lists (two modes: `hostnames` or `ip-map`).  
+  Example:
+  ```bash
+  # produce deduped, sorted hostnames from ip_list.txt
+  python3 dns/reverse_dns.py --mode hostnames --input ip_list.txt --output dns_results.txt
 
-* External commands are executed only after a **Run / Copy / Cancel** review step.
-* If a binary is missing, the script warns and skips the run.
-* `--no-tools` guarantees a review-only session. (no tool execution during review process)
+  # produce "IP (hostname)" mappings preserving input order
+  python3 dns/reverse_dns.py --mode ip-map --input in-scope --output resolved_ips.txt
+  ```
 
-### Highlights
+- `dns/find_domain_controllers.py` — Discover Windows DCs via SRV lookup (`_ldap._tcp.dc._msdcs.<domain>`), resolve hostnames → IPs, optional masscan fallback and PTR lookups.  
+  Example:
+  ```bash
+  # auto-detect domain from /etc/resolv.conf 'search', do SRV lookup then resolve
+  python3 dns/find_domain_controllers.py
 
-* **Scan overview (auto)** after choosing a scan:
+  # explicitly set domain and run masscan fallback if SRV returns nothing
+  sudo python3 dns/find_domain_controllers.py --domain example.corp --fallback-masscan --in-scope ~/in-scope --rate 10000
+  ```
 
-  * Files: total, reviewed, empty, malformed tokens
-  * Hosts: unique count + IPv4/IPv6 split (with sample)
-  * Ports: unique + **Top 5** most prevalent
-  * Duplicates: count of identical host\:port clusters, top cluster sizes
-    *(section labels render in **cyan** in ANSI-capable terminals)*
-* **Severity browser** with substring filtering, host-count sort, reviewed view.
-* **Compare & group** (\[H]) filtered files by identical host\:port combinations; pick a group to filter (shows only first 5 group shortcuts for long lists).
-* **Open-first-on-Enter** — press Enter to open the first filtered match.
-* **Mark-all-filtered** — bulk mark current filtered set as `REVIEW_COMPLETE-...`.
-* **Tools (optional)** per file (run one or many in the same context):
+---
 
-  * **nmap** (TCP/UDP, single-select **NSE profiles**; auto-switch to UDP for SNMP/IPMI)
-  * **NetExec** (**protocol select**: mssql, smb, ftp, ldap, nfs, rdp, ssh, vnc, winrm, wmi)
-  * **Custom command** with placeholders:
-    `{TCP_IPS} {UDP_IPS} {TCP_HOST_PORTS} {PORTS} {WORKDIR} {RESULTS_DIR} {OABASE}`
-* **Artifacts** are organized under `scan_artifacts/<scan>/<severity>/<plugin>/`
+### `network/`  
+Helpers to extract and normalize IP/target lists from scan output.
 
-  * nmap: `-oA run-<ts>` triple
-  * NetExec: `run-<ts>.nxc.<proto>.log`
-  * **SMB relay list**: `run-<ts>.SMB_Signing_not_required_targets.txt`
-  * Temp helpers per run: `tcp_ips.list`, `udp_ips.list`, `tcp_host_ports.list`
+- `network/chaos_ip_extract.py` — Extract valid IPv4s from `~/chaos`, dedupe and numeric-sort into `~/order` (defaults).  
+  Example:
+  ```bash
+  # defaults: input ~/chaos -> output ~/order
+  python3 network/chaos_ip_extract.py
 
-### Quick start
+  # custom files
+  python3 network/chaos_ip_extract.py --input /path/to/chaos.txt --output /tmp/order.txt
+  ```
 
-```bash
-# 1) Put your exported plugin host files here:
-./nessus_plugin_hosts/<ScanName>/<Severity>/*.txt
+- `network/masscan_to_targets.py` — Extract IPv4 tokens from masscan/scan output, validate octets, dedupe and numeric sort (writes `targets` by default).  
+  Example:
+  ```bash
+  # read masscan_output file and write ./targets
+  python3 network/masscan_to_targets.py masscan_output --output targets
 
-# 2) Run
-python3 mundane.py
+  # from stdin, permissive (no octet validation)
+  cat masscan_output | python3 network/masscan_to_targets.py - --no-validate --output targets
+  ```
 
-# Optional: point to a different root
-python3 mundane.py /path/to/nessus_plugin_hosts
+---
 
-# Optional: disable all tool prompts (review-only)
-python3 mundane.py --no-tools
-```
+### `web/`  
+Web recon helpers.
 
-> **No Python packages required.** Optional external binaries if you want to execute tools:
->
-> * `nmap` (with NSE scripts)
-> * `nxc` or `netexec` (detected automatically)
+- `web/gobuster_to_eyewitness.py` — Convert Gobuster output paths into full URLs (for EyeWitness or similar). Supports stdin and optional dedupe.  
+  Example:
+  ```bash
+  # convert a gobuster output file to full URLs for http://example.com
+  python3 web/gobuster_to_eyewitness.py gobuster_output.txt http://example.com urls_for_eyewitness.txt
 
-### Typical flow
+  # read from stdin and dedupe
+  cat gobuster_output.txt | python3 web/gobuster_to_eyewitness.py - http://example.com urls.txt --dedupe
+  ```
 
-1. **Select a scan** → see the **Scan Overview** (cyan-labeled stats).
-2. **Choose a severity** → filter/sort unreviewed files.
-3. Press **Enter** to open the top match, or type a number to open a file.
-4. **Optionally** run a tool (nmap / NetExec / custom). You can run multiple commands in the same context.
-5. **Mark** the file as `REVIEW_COMPLETE` (or leave it reviewed but not renamed).
+---
 
-### Tool notes
+### `firewall/`  
+Manage iptables OUTPUT DROP rules safely.
 
-* **nmap**
+- `firewall/apply_iptables_blocks.py` — Add DROP rules for IP ranges and/or single IPs; dry-run by default, with `--apply` to actually run. Creates a timestamped backup before changes and can save persistent rules via `iptables-save`. **Be careful** — applying rules requires root/sudo.  
+  Example:
+  ```bash
+  # show planned rules (dry-run)
+  python3 firewall/apply_iptables_blocks.py --ranges-file cleaned_ip_ranges.txt --ip 1.2.3.4
 
-  * TCP by default; select profile (Crypto/SSH/SMB/SNMP/IPMI).
-  * Picking SNMP/IPMI or adding `snmp*`/`ipmi-version` auto-enables **UDP**.
-  * Always writes `-oA` to the run’s artifact base.
+  # apply rules and save (interactive confirmation)
+  sudo python3 firewall/apply_iptables_blocks.py --ranges-file cleaned_ip_ranges.txt --ips-file block_ips.txt --apply
 
-* **NetExec**
+  # apply non-interactively (dangerous)
+  sudo python3 firewall/apply_iptables_blocks.py --ranges-file cleaned_ip_ranges.txt --apply --yes
+  ```
 
-  * Choose the **protocol** first.
-  * **SMB template** uses positional targets and writes the **relay list** into the run’s artifact folder:
+---
 
-    ```
-    nxc smb <tcp_ips.list> --gen-relay-list run-<ts>.SMB_Signing_not_required_targets.txt --shares --log run-<ts>.nxc.smb.log
-    ```
-  * Other protocols write a per-run `.log` alongside artifacts.
+### `files/`  
+Small file utilities for splitting and credential processing.
 
-* **Custom command**
+- `files/split_lines.py` — Split a file into N-line chunks (GNU `split`-style numeric suffixes).  
+  Example:
+  ```bash
+  # split `targets` into batches of 1000 lines into target_batches/targets_batch_01.txt, etc.
+  python3 files/split_lines.py --input targets --outdir target_batches --prefix targets_batch_ --lines 1000
+  ```
 
-  * Use placeholders to reference the current context:
+- `files/split_creds.py` — Split `user:pass[:...]` dumps into separate user and password lists; supports dedupe, sorting, stripping quotes/whitespace, and ignoring lines without delimiter.  
+  Example:
+  ```bash
+  # default behavior: preserve order, allow duplicates
+  python3 files/split_creds.py
 
-    * `{TCP_IPS}`, `{UDP_IPS}`, `{TCP_HOST_PORTS}`, `{PORTS}`
-    * `{WORKDIR}`, `{RESULTS_DIR}`, `{OABASE}`
+  # dedupe usernames, strip surrounding quotes and whitespace, and sort users
+  python3 files/split_creds.py --glob "unique-creds-*.txt" --users users.txt --passwords pws.txt --dedupe-users --strip --sort users
+  ```
 
-### Keyboard hints
+---
 
-* **Enter**: open first filtered file
-* **F/C**: set/clear filter
-* **O**: toggle sort (Name ↔ Host count)
-* **R**: view reviewed files
-* **M**: mark all filtered as reviewed
-* **H**: compare filtered files, then select a **group** (e.g., `g1…g5`) to filter
+### `nessus/`  
+Nessus / vulnerability review tooling.
+
+- `nessus/mundane.py` — Nessus plugin-host review and verification helper.
+
+---
+
+## Notes & recommendations
+- All tools are standard-Python only (stdlib). Run with `python3`/`python` (3.8+ recommended).
+- Firewall tools will require root (`sudo`) when using `--apply` or saving persistent iptables rules.
+- Examples are intentionally explicit so you can copy/paste; tweak paths/options per your workflow.
