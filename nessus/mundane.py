@@ -1045,7 +1045,7 @@ def main(args):
                     if args.no_tools:
                         info("(no-tools mode active — skipping tool selection)")
                         try:
-                            if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                            if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
                                 newp = rename_review_complete(chosen)
                                 completed_total.append(newp.name if newp != chosen else chosen.name)
                             else:
@@ -1058,13 +1058,13 @@ def main(args):
 
                     # Run a tool?
                     try:
-                        do_scan = yesno("\nRun a tool now? (y/N):", default="n")
+                        do_scan = yesno("\nRun a tool now?", default="n")
                     except KeyboardInterrupt:
                         continue
 
                     if not do_scan:
                         try:
-                            if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                            if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
                                 newp = rename_review_complete(chosen)
                                 completed_total.append(newp.name if newp != chosen else chosen.name)
                             else:
@@ -1078,7 +1078,7 @@ def main(args):
                     sample_hosts = hosts
                     if len(hosts) > 5:
                         try:
-                            do_sample = yesno(f"There are {len(hosts)} hosts. Sample a subset? (y/N):", default="n")
+                            do_sample = yesno(f"There are {len(hosts)} hosts. Sample a subset?", default="n")
                         except KeyboardInterrupt:
                             continue
                         if do_sample:
@@ -1117,7 +1117,7 @@ def main(args):
 
                         if tool_choice == "nmap":
                             try:
-                                udp_ports = yesno("\nDo you want to perform UDP scanning instead of TCP? (y/N):", default="n")
+                                udp_ports = yesno("\nDo you want to perform UDP scanning instead of TCP?", default="n")
                             except KeyboardInterrupt:
                                 break
 
@@ -1235,7 +1235,7 @@ def main(args):
                         info(f" - Results dir:{results_dir}")
 
                         try:
-                            again = yesno("\nRun another command for this plugin file? (y/N):", default="n")
+                            again = yesno("\nRun another command for this plugin file?", default="n")
                         except KeyboardInterrupt:
                             break
                         if not again:
@@ -1244,7 +1244,7 @@ def main(args):
                     # After leaving tool loop, optional rename (once)
                     if not completion_decided:
                         try:
-                            if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                            if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
                                 newp = rename_review_complete(chosen)
                                 completed_total.append(newp.name if newp != chosen else chosen.name)
                             else:
@@ -1460,7 +1460,7 @@ def main(args):
                 if args.no_tools:
                     info("(no-tools mode active — skipping tool selection)")
                     try:
-                        if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                        if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
                             newp = rename_review_complete(chosen)
                             completed_total.append(newp.name if newp != chosen else chosen.name)
                         else:
@@ -1471,13 +1471,13 @@ def main(args):
                     continue
 
                 try:
-                    do_scan = yesno("\nRun a tool now? (y/N):", default="n")
+                    do_scan = yesno("\nRun a tool now?", default="n")
                 except KeyboardInterrupt:
                     continue
 
                 if not do_scan:
                     try:
-                        if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                        if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
                             newp = rename_review_complete(chosen)
                             completed_total.append(newp.name if newp != chosen else chosen.name)
                         else:
@@ -1490,7 +1490,7 @@ def main(args):
                 sample_hosts = hosts
                 if len(hosts) > 5:
                     try:
-                        do_sample = yesno(f"There are {len(hosts)} hosts. Sample a subset? (y/N):", default="n")
+                        do_sample = yesno(f"There are {len(hosts)} hosts. Sample a subset?", default="n")
                     except KeyboardInterrupt:
                         continue
                     if do_sample:
@@ -1527,7 +1527,7 @@ def main(args):
 
                     if tool_choice == "nmap":
                         try:
-                            udp_ports = yesno("\nDo you want to perform UDP scanning instead of TCP? (y/N):", default="n")
+                            udp_ports = yesno("\nDo you want to perform UDP scanning instead of TCP?", default="n")
                         except KeyboardInterrupt:
                             break
 
@@ -1643,7 +1643,7 @@ def main(args):
                     info(f" - Results dir:{results_dir}")
 
                     try:
-                        again = yesno("\nRun another command for this plugin file? (y/N):", default="n")
+                        again = yesno("\nRun another command for this plugin file?", default="n")
                     except KeyboardInterrupt:
                         break
                     if not again:
@@ -1652,7 +1652,7 @@ def main(args):
                 # After leaving tool loop, optional rename (once)
                 if not completion_decided:
                     try:
-                        if yesno("Mark this file as REVIEW_COMPLETE? (y/N):", default="n"):
+                        if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
                             newp = rename_review_complete(chosen)
                             completed_total.append(newp.name if newp != chosen else chosen.name)
                         else:
