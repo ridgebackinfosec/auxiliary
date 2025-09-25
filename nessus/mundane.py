@@ -11,11 +11,16 @@ try:
     from rich.console import Console
     from rich.table import Table
     from rich.traceback import install as rich_tb_install
+    from rich import box
 except Exception:
     typer = None
     Console = None
     Table = None
     rich_tb_install = None
+    box = None
+
+# Create a console we can use in interactive flow (even without Typer)
+_console_global = Console() if Console else None
 
 # Install pretty tracebacks if Rich is available
 if 'rich_tb_install' in globals() and rich_tb_install:
@@ -699,6 +704,70 @@ def print_grouped_hosts_ports(path: Path):
     except Exception as e:
         warn(f"Error grouping hosts/ports: {e}")
 
+# ---------- Rich table helpers (severity & files) ----------
+def _render_severity_table(severities, msf_summary=None):
+    """
+    Render severity menu as a Rich table if available, otherwise print plain text.
+    msf_summary: optional tuple (idx, unrev, rev, total) for the Metasploit Module row.
+    """
+    if not (Table and _console_global):
+        # Plain fallback
+        for i, sd in enumerate(severities, 1):
+            unrev, rev, tot = _count_severity_files(sd)
+            label = pretty_severity_label(sd.name)
+            print(f"[{i}] {label} — unreviewed: {_color_unreviewed(unrev)} | reviewed: {fmt_reviewed(rev)} | total: {tot}")
+        if msf_summary:
+            idx, unrev, rev, tot = msf_summary
+            print(f"[{idx}] Metasploit Module — unreviewed: {_color_unreviewed(unrev)} | reviewed: {fmt_reviewed(rev)} | total: {tot}")
+        return
+
+    table = Table(title=None, box=box.SIMPLE if box else None, show_lines=False, pad_edge=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("Severity", no_wrap=True)
+    table.add_column("Unreviewed", justify="right", no_wrap=True)
+    table.add_column("Reviewed", justify="right", no_wrap=True)
+    table.add_column("Total", justify="right", no_wrap=True)
+
+    for i, sd in enumerate(severities, 1):
+        unrev, rev, tot = _count_severity_files(sd)
+        label = pretty_severity_label(sd.name)
+        table.add_row(str(i), colorize_severity_label(label), _color_unreviewed(unrev), fmt_reviewed(str(rev)), str(tot))
+
+    if msf_summary:
+        idx, unrev, rev, tot = msf_summary
+        table.add_row(str(idx), colorize_severity_label("Metasploit Module"), _color_unreviewed(unrev), fmt_reviewed(str(rev)), str(tot))
+
+    _console_global.print(table)
+
+def _render_file_list_table(display, sort_mode, get_counts_for):
+    """
+    Render file list (unreviewed) as a Rich table if available, otherwise print plain text.
+    display: list[Path]
+    """
+    if not (Table and _console_global):
+        for i, f in enumerate(display, 1):
+            if sort_mode == "hosts":
+                hc, _ps = get_counts_for(f)
+                print(f"[{i}] {f.name}  — hosts: {hc}")
+            else:
+                print(f"[{i}] {f.name}")
+        return
+
+    table = Table(title=None, box=box.SIMPLE if box else None, show_lines=False, pad_edge=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("File")
+    if sort_mode == "hosts":
+        table.add_column("Hosts", justify="right", no_wrap=True)
+
+    for i, f in enumerate(display, 1):
+        if sort_mode == "hosts":
+            hc, _ps = get_counts_for(f)
+            table.add_row(str(i), f.name, str(hc))
+        else:
+            table.add_row(str(i), f.name)
+
+    _console_global.print(table)
+
 # ========== Tool selection ==========
 def choose_tool():
     header("Choose a tool")
@@ -837,18 +906,11 @@ def main(args):
             )
             msf_unrev = msf_total - msf_reviewed
 
-            # Render the standard severities
-            for i, sd in enumerate(severities, 1):
-                unrev, rev, tot = _count_severity_files(sd)
-                label = pretty_severity_label(sd.name)
-                print(f"[{i}] {label} — unreviewed: {_color_unreviewed(unrev)} | reviewed: {fmt_reviewed(rev)} | total: {tot}")
-
-            # Optional Metasploit Module entry (always at the bottom)
-            extra_offset = 0
+            # --- Rich table rendering (with fallback) ---
+            msf_summary = None
             if has_msf:
-                extra_offset = 1
-                idx = len(severities) + 1
-                print(f"[{idx}] Metasploit Module — unreviewed: {_color_unreviewed(msf_unrev)} | reviewed: {fmt_reviewed(msf_reviewed)} | total: {msf_total}")
+                msf_summary = (len(severities) + 1, msf_unrev, msf_reviewed, msf_total)
+            _render_severity_table(severities, msf_summary=msf_summary)
 
             print(fmt_action("[B] Back"))
             try:
@@ -858,7 +920,7 @@ def main(args):
                 break
             if ans in ("b", "back"):
                 break
-            options_count = len(severities) + extra_offset
+            options_count = len(severities) + (1 if has_msf else 0)
             if not ans.isdigit() or not (1 <= int(ans) <= options_count):
                 warn("Invalid choice.")
                 continue
@@ -926,12 +988,9 @@ def main(args):
                         actions += "[B] Back / [Enter] Open first match"
                         print(fmt_action(actions))
 
-                        for i, f in enumerate(display, 1):
-                            if sort_mode == "hosts":
-                                hc, _ps = get_counts_for(f)
-                                print(f"[{i}] {f.name}  — hosts: {hc}")
-                            else:
-                                print(f"[{i}] {f.name}")
+                        # --- Rich file list rendering (with fallback) ---
+                        _render_file_list_table(display, sort_mode, get_counts_for)
+
                         ans2 = input("Choose a file number, or action: ").strip().lower()
                     except KeyboardInterrupt:
                         warn("\nInterrupted — returning to severity menu.")
@@ -1342,14 +1401,9 @@ def main(args):
                     actions += "[B] Back / [Enter] Open first match"
                     print(fmt_action(actions))
 
-                    for i, f in enumerate(display, 1):
-                        sev_label = pretty_severity_label(sev_map[f].name)
-                        sev_col = colorize_severity_label(sev_label)
-                        if sort_mode == "hosts":
-                            hc, _ps = get_counts_for_msf(f)
-                            print(f"[{i}] {f.name}  — {sev_col}  — hosts: {hc}")
-                        else:
-                            print(f"[{i}] {f.name}  — {sev_col}")
+                    # Render table (with fallback)
+                    _render_file_list_table(display, sort_mode, get_counts_for_msf)
+
                     ans3 = input("Choose a file number, or action: ").strip().lower()
                 except KeyboardInterrupt:
                     warn("\nInterrupted — returning to severity menu.")
