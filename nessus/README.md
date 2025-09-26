@@ -1,111 +1,130 @@
-# Nessus
+# mundane.py
 
-## mundane.py
-
-Small TUI helper to **review Nessus plugin host files** quickly and (optionally) kick off focused checks with **nmap** or **NetExec**—all with **zero Python deps**.
-
-**Goal:** make it fast to review Nessus “host/port” plugin files and launch sensible `nmap` runs with saved artifacts.
+A small TUI helper to **review Nessus plugin host files** quickly and (optionally) kick off focused checks with **nmap** or **NetExec**. Includes a one-step **wizard** to seed the export structure directly from a `.nessus` file.
 
 ---
 
-### Requirements
+## Requirements
 
-* Python 3.8+
-* The exported Nessus files via [NessusPluginHosts.py](https://github.com/DefensiveOrigins/NessusPluginHosts).
-  
-`python NessusPluginHosts.py -f scan.nessus --list-plugins --export-plugin-hosts ./nessus_plugin_hosts`
+- Python 3.8+
+- Install Python deps:
+  ```bash
+  pip install -r requirements.txt
+  ```
+  (uses: `rich`, `typer`, `pyperclip`, `colorama`)
+- Optional external tools (only if you choose to run them):
+  - `git` (required for `wizard`)
+  - `nmap`
+  - `nxc` or `netexec`
+- Unix-like shell recommended. On Linux, clipboard copy may require one of: `xclip`, `wl-copy`, or `xsel`.
 
-### Safety & Options
+---
 
-* External commands are executed only after a **Run / Copy / Cancel** review step.
-* If a binary is missing, the script warns and skips the run.
-* `--no-tools` guarantees a review-only session. (no tool execution during review process)
+## Quick Start
 
-### Highlights
-
-* **Scan overview (auto)** after choosing a scan:
-
-  * Files: total, reviewed, empty, malformed tokens
-  * Hosts: unique count + IPv4/IPv6 split (with sample)
-  * Ports: unique + **Top 5** most prevalent
-  * Duplicates: count of identical host\:port clusters, top cluster sizes
-    *(section labels render in **cyan** in ANSI-capable terminals)*
-* **Severity browser** with substring filtering, host-count sort, reviewed view.
-* **Compare & group** (\[H]) filtered files by identical host\:port combinations; pick a group to filter (shows only first 5 group shortcuts for long lists).
-* **Open-first-on-Enter** — press Enter to open the first filtered match.
-* **Mark-all-filtered** — bulk mark current filtered set as `REVIEW_COMPLETE-...`.
-* **Tools (optional)** per file (run one or many in the same context):
-
-  * **nmap** (TCP/UDP, single-select **NSE profiles**; auto-switch to UDP for SNMP/IPMI)
-  * **NetExec** (**protocol select**: mssql, smb, ftp, ldap, nfs, rdp, ssh, vnc, winrm, wmi)
-  * **Custom command** with placeholders:
-    `{TCP_IPS} {UDP_IPS} {TCP_HOST_PORTS} {PORTS} {WORKDIR} {RESULTS_DIR} {OABASE}`
-* **Artifacts** are organized under `scan_artifacts/<scan>/<severity>/<plugin>/`
-
-  * nmap: `-oA run-<ts>` triple
-  * NetExec: `run-<ts>.nxc.<proto>.log`
-  * **SMB relay list**: `run-<ts>.SMB_Signing_not_required_targets.txt`
-  * Temp helpers per run: `tcp_ips.list`, `udp_ips.list`, `tcp_host_ports.list`
-
-### Quick start
+### 1) Seed exports from a `.nessus` (wizard)
+This clones **NessusPluginHosts** and exports plugin hostlists into `./nessus_plugin_hosts`:
 
 ```bash
-# 1) Put your exported plugin host files here:
-./nessus_plugin_hosts/<ScanName>/<Severity>/*.txt
-
-# 2) Run
-python3 mundane.py
-
-# Optional: point to a different root
-python3 mundane.py /path/to/nessus_plugin_hosts
-
-# Optional: disable all tool prompts (review-only)
-python3 mundane.py --no-tools
+python mundane.py wizard path/to/scan.nessus
+# immediately start reviewing after export:
+python mundane.py wizard path/to/scan.nessus --review
+# customize clone/output locations:
+python mundane.py wizard scan.nessus --repo-dir ./vendor/NessusPluginHosts --out-dir ./nessus_plugin_hosts
 ```
 
-> **No Python packages required.** Optional external binaries if you want to execute tools:
->
-> * `nmap` (with NSE scripts)
-> * `nxc` or `netexec` (detected automatically)
+### 2) Review exports interactively
+```bash
+python mundane.py review --export-root ./nessus_plugin_hosts
+```
 
-### Typical flow
+---
 
-1. **Select a scan** → see the **Scan Overview** (cyan-labeled stats).
-2. **Choose a severity** → filter/sort unreviewed files.
-3. Press **Enter** to open the top match, or type a number to open a file.
-4. **Optionally** run a tool (nmap / NetExec / custom). You can run multiple commands in the same context.
-5. **Mark** the file as `REVIEW_COMPLETE` (or leave it reviewed but not renamed).
+## What You Can Do
 
-### Tool notes
+- **Browse scans & severities** with clean Rich tables.
+- **Preview files** before acting (shows **Plugin Details** link like `https://www.tenable.com/plugins/nessus/<ID>`).
+- **Paged views** for long outputs with familiar controls: **[N]**ext, **[P]**rev, **[B]**ack (single-page views auto-return).
+- **Grouped view** (`host:port,port`) or raw file view.
+- **Copy to clipboard** from file view (**[C] Copy**) or the command review dialog.
+- **Run tools** against current hosts:
+  - `nmap` (choose NSE profiles; SNMP/IPMI auto-switch to UDP)
+  - `netexec`/`nxc` (SMB relay list generation included)
+  - **Custom commands** with placeholders (see below)
+- **Compare files**: find identical host:port combo groups across filtered files.
+- **Bulk mark** filtered files as `REVIEW_COMPLETE-...` with confirmation.
+- **Scan overview** (auto after selecting a scan): totals, empty/malformed counts, IPv4/IPv6 split, top ports, identical groups.
+- **Progress indicators** while cloning, exporting, parsing, grouping, bulk-marking, and running tools.
 
-* **nmap**
+---
 
-  * TCP by default; select profile (Crypto/SSH/SMB/SNMP/IPMI).
-  * Picking SNMP/IPMI or adding `snmp*`/`ipmi-version` auto-enables **UDP**.
-  * Always writes `-oA` to the run’s artifact base.
+## Commands
 
-* **NetExec**
+```bash
+# Wizard: seed exported plugin files from a .nessus scan (then optionally review)
+python mundane.py wizard <scan.nessus> [--repo-dir DIR] [--out-dir DIR] [--review]
 
-  * Choose the **protocol** first.
-  * **SMB template** uses positional targets and writes the **relay list** into the run’s artifact folder:
+# Interactive review (main workflow)
+python mundane.py review --export-root ./nessus_plugin_hosts [--no-tools]
 
-    ```
-    nxc smb <tcp_ips.list> --gen-relay-list run-<ts>.SMB_Signing_not_required_targets.txt --shares --log run-<ts>.nxc.smb.log
-    ```
-  * Other protocols write a per-run `.log` alongside artifacts.
+# Summarize a scan directory
+python mundane.py summary ./nessus_plugin_hosts/<ScanName> [--top-ports 10]
 
-* **Custom command**
+# Compare/group identical host:port combos across files
+python mundane.py compare 4_Critical/*.txt
 
-  * Use placeholders to reference the current context:
+# Quick file preview
+python mundane.py view nessus_plugin_hosts/<Scan>/<Severity>/<Plugin>.txt [--grouped]
+```
 
-    * `{TCP_IPS}`, `{UDP_IPS}`, `{TCP_HOST_PORTS}`, `{PORTS}`
-    * `{WORKDIR}`, `{RESULTS_DIR}`, `{OABASE}`
+### Custom command placeholders
+When running a custom command, you can use these tokens (expanded at runtime):
 
-### Keyboard hints
+- `{TCP_IPS}` – file containing hosts (one per line)
+- `{UDP_IPS}` – same as above, used when needed by UDP
+- `{TCP_HOST_PORTS}` – file with `host:port1,port2,...`
+- `{PORTS}` – comma-separated ports string (if detected)
+- `{WORKDIR}` – temp working directory for the run
+- `{RESULTS_DIR}` – persistent results directory for the plugin
+- `{OABASE}` – base path prefix for output artifacts (e.g., `nmap -oA {OABASE}`)
 
-* **Enter**: open first filtered file
-* **F/C**: set/clear filter
-* **O**: toggle sort (Name ↔ Host count)
-* **R**: view reviewed files
-* **M**: mark all filtered as reviewed
-* **H**: compare filtered files, then select a **group** (e.g., `g1…g5`) to filter
+**Examples**
+```bash
+httpx -l {TCP_IPS} -silent -o {OABASE}.urls.txt
+nuclei -l {OABASE}.urls.txt -o {OABASE}.nuclei.txt
+cat {TCP_IPS} | xargs -I{} sh -c 'echo {}; nmap -Pn -p {PORTS} {}'
+```
+
+---
+
+## Tips
+
+- Colors can be disabled by setting `NO_COLOR=1` or using a dumb terminal (`TERM=dumb`).
+- Not running as root and no `sudo` available may limit UDP/NSE behavior—mundane will warn you.
+- Clipboard: if headless Linux lacks a clipboard utility, copy prompts will print content for manual copy.
+
+---
+
+## Directory Layout (after wizard)
+
+```
+nessus_plugin_hosts/
+  <ScanName>/
+    4_Critical/
+      193421_Apache_2.4.x___2.4.54_Authentication_Bypass.txt
+      ...
+    3_High/
+    2_Medium/
+    1_Low/
+    0_Info/
+scan_artifacts/
+  <ScanName>/<Severity>/<PluginBase>/run-YYYYmmdd-HHMMSS.*
+```
+
+---
+
+## License
+
+This tool orchestrates local utilities and uses data produced by
+[DefensiveOrigins/NessusPluginHosts](https://github.com/DefensiveOrigins/NessusPluginHosts).
+Respect each dependency’s license and your environment’s usage policies.

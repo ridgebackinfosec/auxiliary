@@ -937,6 +937,19 @@ def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[
         raise subprocess.CalledProcessError(rc, cmd)
     return rc
 
+# ---------- Wizard helpers ----------
+def clone_nessus_plugin_hosts(repo_url: str, dest: Path) -> Path:
+    """Clone NessusPluginHosts into dest if absent; returns the repo path."""
+    if dest.exists() and (dest / "NessusPluginHosts.py").exists():
+        ok(f"Repo already present: {dest}")
+        return dest
+    require_cmd("git")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    header("Cloning NessusPluginHosts")
+    run_command_with_progress(["git", "clone", "--depth", "1", repo_url, str(dest)])
+    ok(f"Cloned into {dest}")
+    return dest
+
 # ========== Tool selection ==========
 def choose_tool():
     header("Choose a tool")
@@ -2087,6 +2100,34 @@ def summary(
     top_ports: int = typer.Option(5, "--top-ports", "-n", min=1, help="How many top ports to show."),
 ):
     show_scan_summary(scan_dir, top_ports_n=top_ports)
+
+@app.command(help="Wizard: seed exported plugin files from a .nessus scan using NessusPluginHosts.")
+def wizard(
+    nessus: Path = typer.Argument(..., exists=True, readable=True, help="Path to a .nessus file"),
+    out_dir: Path = typer.Option(Path("./nessus_plugin_hosts"), "--out-dir", "-o", help="Export output directory"),
+    repo_dir: Path = typer.Option(Path("./vendor/NessusPluginHosts"), "--repo-dir", help="Where to clone the helper repo"),
+    review: bool = typer.Option(False, "--review", help="Launch interactive review after export"),
+):
+    # 1) Ensure repo present
+    repo_url = "https://github.com/DefensiveOrigins/NessusPluginHosts"
+    repo_path = clone_nessus_plugin_hosts(repo_url, repo_dir)
+
+    # 2) Run export
+    header("Exporting plugin host files")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "NessusPluginHosts.py", "-f", str(nessus), "--list-plugins", "--export-plugin-hosts", str(out_dir)]
+    run_command_with_progress(cmd, shell=False if os.name != "nt" else False)
+
+    ok(f"Export complete. Files written under: {out_dir.resolve()}")
+    info("Next step:")
+    info(f"  python mundane.py review --export-root {out_dir}")
+
+    if review:
+        args = types.SimpleNamespace(export_root=str(out_dir), no_tools=False)
+        try:
+            main(args)
+        except KeyboardInterrupt:
+            warn("\nInterrupted — returning to shell.")
 
 if __name__ == "__main__":
     app()
