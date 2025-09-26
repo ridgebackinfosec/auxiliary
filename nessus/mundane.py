@@ -4,7 +4,7 @@ import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, argparse, t
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict, Counter
-from typing import Any  # ← for relaxed typing on Rich helpers
+from typing import Any, Optional  # ← relaxed typing + Optional for CLI args
 
 # === Optional new deps for modern CLI & tracebacks ===
 try:
@@ -14,6 +14,8 @@ try:
     from rich.traceback import install as rich_tb_install
     from rich import box
     from rich.text import Text  # for proper width-calculated styled cells
+    # Progress bits (aliased TextColumn to avoid name clash with rich.text.Text)
+    from rich.progress import Progress, SpinnerColumn, TextColumn as ProgTextColumn, TimeElapsedColumn
 except Exception:
     typer = None
     Console = None
@@ -21,6 +23,10 @@ except Exception:
     rich_tb_install = None
     box = None
     Text = None
+    Progress = None
+    SpinnerColumn = None
+    ProgTextColumn = None
+    TimeElapsedColumn = None
 
 # Create a console we can use in interactive flow (even without Typer)
 _console_global = Console() if Console else None
@@ -36,22 +42,29 @@ if 'rich_tb_install' in globals() and rich_tb_install:
 # ========== Colors & helpers ==========
 NO_COLOR = (os.environ.get("NO_COLOR") is not None) or (os.environ.get("TERM") == "dumb")
 class C:
-    RESET  = "" if NO_COLOR else "\033[0m"
-    BOLD   = "" if NO_COLOR else "\033[1m"
-    BLUE   = "" if NO_COLOR else "\033[34m"
-    GREEN  = "" if NO_COLOR else "\033[32m"
-    YELLOW = "" if NO_COLOR else "\033[33m"
-    RED    = "" if NO_COLOR else "\033[31m"
-    CYAN   = "" if NO_COLOR else "\033[36m"
-    MAGENTA= "" if NO_COLOR else "\033[35m"
+    RESET  = "" if NO_COLOR else "\u001b[0m"
+    BOLD   = "" if NO_COLOR else "\u001b[1m"
+    BLUE   = "" if NO_COLOR else "\u001b[34m"
+    GREEN  = "" if NO_COLOR else "\u001b[32m"
+    YELLOW = "" if NO_COLOR else "\u001b[33m"
+    RED    = "" if NO_COLOR else "\u001b[31m"
+    CYAN   = "" if NO_COLOR else "\u001b[36m"
+    MAGENTA= "" if NO_COLOR else "\u001b[35m"
 
 def header(msg): print(f"{C.BOLD}{C.BLUE}\n{msg}{C.RESET}")
+
 def ok(msg):     print(f"{C.GREEN}{msg}{C.RESET}")
+
 def warn(msg):   print(f"{C.YELLOW}{msg}{C.RESET}")
+
 def err(msg):    print(f"{C.RED}{msg}{C.RESET}")
+
 def info(msg):   print(msg)
+
 def fmt_action(text): return f"{C.CYAN}>> {text}{C.RESET}"
+
 def fmt_reviewed(text): return f"{C.MAGENTA}{text}{C.RESET}"
+
 def cyan_label(s: str) -> str: return f"{C.CYAN}{s}{C.RESET}"
 
 def colorize_severity_label(label: str) -> str:
@@ -129,8 +142,22 @@ def safe_print_file(path: Path, max_bytes: int = 2_000_000):
         header(f"Showing: {path} ({size} bytes)")
         if size > max_bytes:
             warn(f"File is large; showing first {max_bytes} bytes.")
-        with path.open("rb") as f:
-            data = f.read(max_bytes)
+
+        if Progress and _console_global:
+            with Progress(
+                SpinnerColumn(style="cyan"),
+                ProgTextColumn("[progress.description]{task.description}"),
+                TimeElapsedColumn(),
+                console=_console_global,
+                transient=True,
+            ) as progress:
+                progress.add_task("Reading file...", start=True)
+                with path.open("rb") as f:
+                    data = f.read(max_bytes)
+        else:
+            with path.open("rb") as f:
+                data = f.read(max_bytes)
+
         try:
             print(data.decode("utf-8", errors="replace"))
         except Exception:
@@ -668,11 +695,25 @@ def compare_filtered(files):
     header("Filtered Files: Host/Port Comparison")
     info(f"Files compared: {len(files)}")
 
-    # Parse all
+    # Parse all (with progress)
     parsed = []
-    for f in files:
-        hosts, ports_set, combos, had_explicit = parse_file_hosts_ports_detailed(f)
-        parsed.append((f, hosts, ports_set, combos, had_explicit))
+    if Progress and _console_global:
+        with Progress(
+            SpinnerColumn(style="cyan"),
+            ProgTextColumn("[progress.description]{task.description}"),
+            TimeElapsedColumn(),
+            console=_console_global,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Parsing files for comparison...", total=len(files))
+            for f in files:
+                hosts, ports_set, combos, had_explicit = parse_file_hosts_ports_detailed(f)
+                parsed.append((f, hosts, ports_set, combos, had_explicit))
+                progress.advance(task)
+    else:
+        for f in files:
+            hosts, ports_set, combos, had_explicit = parse_file_hosts_ports_detailed(f)
+            parsed.append((f, hosts, ports_set, combos, had_explicit))
 
     # Compute set-level intersections/unions
     all_host_sets = [set(h) for _, h, _, _, _ in parsed]
@@ -691,12 +732,37 @@ def compare_filtered(files):
     same_ports  = all(sig == port_sigs[0] for sig in port_sigs) if port_sigs else True
     same_combos = all(sig == combo_sigs[0] for sig in combo_sigs) if combo_sigs else True
 
-    # Group files by identical combo signature
+    # Group files by identical combo signature (with progress)
     groups_dict = defaultdict(list)
-    for (f, h, p, c, e), sig in zip(parsed, combo_sigs):
-        groups_dict[sig].append(f.name)
+    if Progress and _console_global and len(parsed) >= 50:
+        with Progress(
+            SpinnerColumn(style="cyan"),
+            ProgTextColumn("[progress.description]{task.description}"),
+            TimeElapsedColumn(),
+            console=_console_global,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Grouping identical host:port combos...", total=len(parsed))
+            for (f, h, p, c, e), sig in zip(parsed, combo_sigs):
+                groups_dict[sig].append(f.name)
+                progress.advance(task)
+    else:
+        for (f, h, p, c, e), sig in zip(parsed, combo_sigs):
+            groups_dict[sig].append(f.name)
 
-    groups_sorted = sorted(groups_dict.values(), key=lambda names: len(names), reverse=True)
+    # Sort groups (quick spinner)
+    if Progress and _console_global and len(groups_dict) >= 10:
+        with Progress(
+            SpinnerColumn(style="cyan"),
+            ProgTextColumn("[progress.description]{task.description}"),
+            TimeElapsedColumn(),
+            console=_console_global,
+            transient=True,
+        ) as progress:
+            progress.add_task("Sorting groups...", start=True)
+            groups_sorted = sorted(groups_dict.values(), key=lambda names: len(names), reverse=True)
+    else:
+        groups_sorted = sorted(groups_dict.values(), key=lambda names: len(names), reverse=True)
 
     # Render pretty tables (or fallback)
     _render_compare_tables(
@@ -834,28 +900,59 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
     malformed_total = 0
     combo_sig_counter = Counter()
 
-    for f in all_files:
-        hosts, ports, combos, had_explicit, malformed = _parse_for_overview(f)
-        malformed_total += malformed
-        if not hosts:
-            empties += 1
-        unique_hosts.update(hosts)
-        # Track IP versions (hostnames are ignored for v4/v6 split)
-        for h in hosts:
-            try:
-                ip = ipaddress.ip_address(h)
-                if isinstance(ip, ipaddress.IPv4Address):
-                    ipv4_set.add(h)
-                elif isinstance(ip, ipaddress.IPv6Address):
-                    ipv6_set.add(h)
-            except Exception:
-                pass
-        # per-file port prevalence
-        for p in ports:
-            ports_counter[p] += 1
-        # identical host:port cluster signature
-        sig = _normalize_combos(hosts, ports, combos, had_explicit)
-        combo_sig_counter[sig] += 1
+    # Progress over file parsing
+    if Progress and _console_global:
+        with Progress(
+            SpinnerColumn(style="cyan"),
+            ProgTextColumn("[progress.description]{task.description}"),
+            TimeElapsedColumn(),
+            console=_console_global,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Parsing files for overview...", total=len(all_files) or 1)
+            for f in all_files:
+                hosts, ports, combos, had_explicit, malformed = _parse_for_overview(f)
+                malformed_total += malformed
+                if not hosts:
+                    empties += 1
+                unique_hosts.update(hosts)
+                # Track IP versions (hostnames are ignored for v4/v6 split)
+                for h in hosts:
+                    try:
+                        ip = ipaddress.ip_address(h)
+                        if isinstance(ip, ipaddress.IPv4Address):
+                            ipv4_set.add(h)
+                        elif isinstance(ip, ipaddress.IPv6Address):
+                            ipv6_set.add(h)
+                    except Exception:
+                        pass
+                # per-file port prevalence
+                for p in ports:
+                    ports_counter[p] += 1
+                # identical host:port cluster signature
+                sig = _normalize_combos(hosts, ports, combos, had_explicit)
+                combo_sig_counter[sig] += 1
+                progress.advance(task)
+    else:
+        for f in all_files:
+            hosts, ports, combos, had_explicit, malformed = _parse_for_overview(f)
+            malformed_total += malformed
+            if not hosts:
+                empties += 1
+            unique_hosts.update(hosts)
+            for h in hosts:
+                try:
+                    ip = ipaddress.ip_address(h)
+                    if isinstance(ip, ipaddress.IPv4Address):
+                        ipv4_set.add(h)
+                    elif isinstance(ip, ipaddress.IPv6Address):
+                        ipv6_set.add(h)
+                except Exception:
+                    pass
+            for p in ports:
+                ports_counter[p] += 1
+            sig = _normalize_combos(hosts, ports, combos, had_explicit)
+            combo_sig_counter[sig] += 1
 
     # Folder health (cyan labels)
     info(f"{cyan_label('Files:')} {total_files}  |  "
@@ -902,6 +999,65 @@ def print_grouped_hosts_ports(path: Path):
                 print(h)
     except Exception as e:
         warn(f"Error grouping hosts/ports: {e}")
+
+# ---------- Run tools with a Rich spinner (streams output) ----------
+def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[str] = None) -> int:
+    """
+    Run a command while showing a Rich spinner & elapsed time.
+    - Streams combined stdout/stderr to the terminal (preserves previous behavior).
+    - On Ctrl+C, terminates the child (kill fallback) and re-raises KeyboardInterrupt.
+    - Raises subprocess.CalledProcessError on non-zero exit (to keep existing error handling).
+    """
+    # Fallback if Rich isn't available
+    if Progress is None or _console_global is None:
+        if isinstance(cmd, list):
+            subprocess.run(cmd, check=True)
+        else:
+            subprocess.run(cmd, shell=True, check=True, executable=executable)
+        return 0
+
+    # Build a friendly label (avoid super-long lines)
+    try:
+        disp = cmd if isinstance(cmd, str) else " ".join(str(x) for x in cmd)
+        if len(disp) > 120:
+            disp = disp[:117] + "..."
+    except Exception:
+        disp = "running command"
+
+    # Start process
+    if isinstance(cmd, list):
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    else:
+        proc = subprocess.Popen(cmd, shell=True, executable=executable, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+
+    try:
+        with Progress(
+            SpinnerColumn(style="cyan"),
+            ProgTextColumn("[progress.description]{task.description}"),
+            TimeElapsedColumn(),
+            console=_console_global,
+            transient=True,
+        ) as progress:
+            task = progress.add_task(f"Running: {disp}", start=True)
+            # Stream output as it arrives; keep spinner alive
+            for line in iter(proc.stdout.readline, ""):
+                print(line, end="")
+                progress.refresh()
+            proc.stdout.close()
+            proc.wait()
+            rc = proc.returncode
+    except KeyboardInterrupt:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        finally:
+            raise
+    if rc != 0:
+        raise subprocess.CalledProcessError(rc, cmd)
+    return rc
 
 # ========== Tool selection ==========
 def choose_tool():
@@ -1168,6 +1324,21 @@ def main(args):
                     if ans2 == "o":
                         sort_mode = "hosts" if sort_mode == "name" else "name"
                         ok(f"Sorting by {'host count (desc)' if sort_mode=='hosts' else 'name (A→Z)'}")
+                        # Precompute host counts on first switch to host sort (helps on big sets)
+                        if sort_mode == "hosts":
+                            missing = [p for p in candidates if p not in file_parse_cache]
+                            if missing and Progress and _console_global:
+                                with Progress(
+                                    SpinnerColumn(style="cyan"),
+                                    ProgTextColumn("[progress.description]{task.description}"),
+                                    TimeElapsedColumn(),
+                                    console=_console_global,
+                                    transient=True,
+                                ) as progress:
+                                    task = progress.add_task("Counting hosts in files...", total=len(missing))
+                                    for p in missing:
+                                        _ = get_counts_for(p)
+                                        progress.advance(task)
                         page_idx = 0
                         continue
                     if ans2 == "x" and group_filter:
@@ -1207,11 +1378,27 @@ def main(args):
                             info("Canceled.")
                             continue
                         renamed = 0
-                        for f in candidates:
-                            newp = rename_review_complete(f)
-                            if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
-                                renamed += 1
-                                completed_total.append(newp.name)
+                        if Progress and _console_global:
+                            with Progress(
+                                SpinnerColumn(style="cyan"),
+                                ProgTextColumn("[progress.description]{task.description}"),
+                                TimeElapsedColumn(),
+                                console=_console_global,
+                                transient=True,
+                            ) as progress:
+                                task = progress.add_task("Marking files as REVIEW_COMPLETE...", total=len(candidates))
+                                for f in candidates:
+                                    newp = rename_review_complete(f)
+                                    if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
+                                        renamed += 1
+                                        completed_total.append(newp.name)
+                                    progress.advance(task)
+                        else:
+                            for f in candidates:
+                                newp = rename_review_complete(f)
+                                if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
+                                    renamed += 1
+                                    completed_total.append(newp.name)
                         ok(f"Summary: {renamed} renamed, {len(candidates)-renamed} skipped.")
                         continue
                     if ans2 == "h":
@@ -1337,8 +1524,21 @@ def main(args):
                                 ok(f"Sampling {k} host(s).")
                                 break
 
-                    workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
-                    tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
+                    # Workspace prep spinner
+                    if Progress and _console_global:
+                        with Progress(
+                            SpinnerColumn(style="cyan"),
+                            ProgTextColumn("[progress.description]{task.description}"),
+                            TimeElapsedColumn(),
+                            console=_console_global,
+                            transient=True,
+                        ) as progress:
+                            progress.add_task("Preparing workspace...", start=True)
+                            workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
+                            tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
+                    else:
+                        workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
+                        tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
 
                     out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir.name) / Path(chosen.name).stem
                     out_dir_static.mkdir(parents=True, exist_ok=True)
@@ -1449,10 +1649,10 @@ def main(args):
                             try:
                                 tool_used = True
                                 if isinstance(cmd, list):
-                                    subprocess.run(cmd, check=True)
+                                    run_command_with_progress(cmd, shell=False)
                                 else:
                                     shell_exec = shutil.which("bash") or shutil.which("sh")
-                                    subprocess.run(cmd, shell=True, check=True, executable=shell_exec)
+                                    run_command_with_progress(cmd, shell=True, executable=shell_exec)
                             except KeyboardInterrupt:
                                 warn("\nRun interrupted — returning to tool menu.")
                                 continue
@@ -1608,6 +1808,20 @@ def main(args):
                 if ans3 == "o":
                     sort_mode = "hosts" if sort_mode == "name" else "name"
                     ok(f"Sorting by {'host count (desc)' if sort_mode=='hosts' else 'name (A→Z)'}")
+                    if sort_mode == "hosts":
+                        missing = [p for p in candidates if p not in file_parse_cache]
+                        if missing and Progress and _console_global:
+                            with Progress(
+                                SpinnerColumn(style="cyan"),
+                                ProgTextColumn("[progress.description]{task.description}"),
+                                TimeElapsedColumn(),
+                                console=_console_global,
+                                transient=True,
+                            ) as progress:
+                                task = progress.add_task("Counting hosts in files...", total=len(missing))
+                                for p in missing:
+                                    _ = get_counts_for_msf(p)
+                                    progress.advance(task)
                     page_idx = 0
                     continue
                 if ans3 == "x" and group_filter:
@@ -1647,11 +1861,27 @@ def main(args):
                         info("Canceled.")
                         continue
                     renamed = 0
-                    for f in candidates:
-                        newp = rename_review_complete(f)
-                        if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
-                            renamed += 1
-                            completed_total.append(newp.name)
+                    if Progress and _console_global:
+                        with Progress(
+                            SpinnerColumn(style="cyan"),
+                            ProgTextColumn("[progress.description]{task.description}"),
+                            TimeElapsedColumn(),
+                            console=_console_global,
+                            transient=True,
+                        ) as progress:
+                            task = progress.add_task("Marking files as REVIEW_COMPLETE...", total=len(candidates))
+                            for f in candidates:
+                                newp = rename_review_complete(f)
+                                if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
+                                    renamed += 1
+                                    completed_total.append(newp.name)
+                                progress.advance(task)
+                    else:
+                        for f in candidates:
+                            newp = rename_review_complete(f)
+                            if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
+                                renamed += 1
+                                completed_total.append(newp.name)
                     ok(f"Summary: {renamed} renamed, {len(candidates)-renamed} skipped.")
                     continue
                 if ans3 == "h":
@@ -1772,8 +2002,20 @@ def main(args):
                             ok(f"Sampling {k} host(s).")
                             break
 
-                workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
-                tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
+                if Progress and _console_global:
+                    with Progress(
+                        SpinnerColumn(style="cyan"),
+                        ProgTextColumn("[progress.description]{task.description}"),
+                        TimeElapsedColumn(),
+                        console=_console_global,
+                        transient=True,
+                    ) as progress:
+                        progress.add_task("Preparing workspace...", start=True)
+                        workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
+                        tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
+                else:
+                    workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
+                    tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
 
                 out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir_for_file.name) / Path(chosen.name).stem
                 out_dir_static.mkdir(parents=True, exist_ok=True)
@@ -1881,10 +2123,10 @@ def main(args):
                         try:
                             tool_used = True
                             if isinstance(cmd, list):
-                                subprocess.run(cmd, check=True)
+                                run_command_with_progress(cmd, shell=False)
                             else:
                                 shell_exec = shutil.which("bash") or shutil.which("sh")
-                                subprocess.run(cmd, shell=True, check=True, executable=shell_exec)
+                                run_command_with_progress(cmd, shell=True, executable=shell_exec)
                         except KeyboardInterrupt:
                             warn("\nRun interrupted — returning to tool menu.")
                             continue
@@ -2032,6 +2274,87 @@ if typer:
         top_ports: int = typer.Option(5, "--top-ports", "-n", min=1, help="How many top ports to show."),
     ):
         show_scan_summary(scan_dir, top_ports_n=top_ports)
+
+    # -------- Completion subcommand --------
+    def _detect_shell_name() -> str:
+        """Best-effort shell detection; defaults to bash on *nix and pwsh on Windows."""
+        if os.name == "nt":
+            return "pwsh"
+        sh = os.environ.get("SHELL", "")
+        base = Path(sh).name if sh else ""
+        if base in ("bash", "zsh", "fish"):
+            return base
+        return base or "bash"
+
+    def _env_for_shell(shell_name: str) -> dict:
+        """Prepare env so Typer's built-ins detect the intended shell."""
+        env = os.environ.copy()
+        if os.name != "nt":
+            # Point SHELL to a plausible path for the given shell
+            mapping = {
+                "bash": "/bin/bash",
+                "zsh": "/bin/zsh",
+                "fish": "/usr/bin/fish",
+            }
+            env["SHELL"] = mapping.get(shell_name, env.get("SHELL", "/bin/bash"))
+        return env
+
+    @app.command(help="Install or show shell completions (wrapper over Typer's built-ins).")
+    def completion(
+        install: bool = typer.Option(False, "--install", "-i", help="Install completion for your shell."),
+        show: bool = typer.Option(False, "--show", help="Print the completion script for your shell."),
+        shell: Optional[str] = typer.Option(None, "--shell", "-S", help="Override shell: bash|zsh|fish|pwsh"),
+    ):
+        """
+        Examples:
+          mundane completion --install
+          mundane completion --show
+          mundane completion --install --shell zsh
+        """
+        shell_name = (shell or _detect_shell_name()).lower()
+        if shell_name not in ("bash", "zsh", "fish", "pwsh", "powershell"):
+            err(f"Unknown shell '{shell_name}'. Use one of: bash, zsh, fish, pwsh.")
+            raise typer.Exit(2)
+        if shell_name == "powershell":
+            shell_name = "pwsh"
+
+        if not install and not show:
+            _console.print("Use [bold]--install[/] to install completions or [bold]--show[/] to print the script.", style="cyan")
+            _console.print("You can also run: [bold]mundane --install-completion[/] or [bold]mundane --show-completion[/].")
+            raise typer.Exit(0)
+
+        env = _env_for_shell(shell_name)
+        prog = [sys.executable, os.path.abspath(__file__)]
+
+        if install:
+            try:
+                subprocess.run(prog + ["--install-completion"], env=env, check=True)
+                ok(f"Completion installed for {shell_name}.")
+                if shell_name == "zsh":
+                    info("Reload with: source ~/.zshrc")
+                elif shell_name == "bash":
+                    info("Reload with: source ~/.bashrc  (or ~/.bash_profile on macOS)")
+                elif shell_name == "fish":
+                    info("Reload with: exec fish")
+                elif shell_name == "pwsh":
+                    info("Restart PowerShell or open a new session.")
+            except subprocess.CalledProcessError as e:
+                err(f"Install failed (exit {e.returncode}). You can try: mundane --install-completion")
+                raise typer.Exit(e.returncode)
+
+        if show:
+            try:
+                res = subprocess.run(prog + ["--show-completion"], env=env, check=True, capture_output=True, text=True)
+                print(res.stdout.rstrip("\n"))
+                if shell_name in ("bash", "zsh"):
+                    info(f"\nOne-shot enable in this session:\n  eval \"$(mundane --show-completion)\"")
+                elif shell_name == "fish":
+                    info(f"\nOne-shot enable in this session:\n  mundane --show-completion | source")
+                elif shell_name == "pwsh":
+                    info(f"\nOne-shot enable in this session:\n  mundane --show-completion | Invoke-Expression")
+            except subprocess.CalledProcessError as e:
+                err(f"Show failed (exit {e.returncode}). You can try: mundane --show-completion")
+                raise typer.Exit(e.returncode)
 
 if __name__ == "__main__":
     # If Typer is available and user didn't explicitly ask for argparse path, run the modern CLI.
