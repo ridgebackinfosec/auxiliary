@@ -28,6 +28,12 @@ except Exception:
     ProgTextColumn = None
     TimeElapsedColumn = None
 
+# Optional clipboard helper
+try:
+    import pyperclip  # type: ignore
+except Exception:
+    pyperclip = None
+
 # Create a console we can use in interactive flow (even without Typer)
 _console_global = Console() if Console else None
 
@@ -165,6 +171,44 @@ def safe_print_file(path: Path, max_bytes: int = 2_000_000):
     except Exception as e:
         warn(f"Could not display file: {e}")
 
+# === Paged viewing helpers (Raw / Grouped) ===
+def _file_raw_payload_text(path: Path, max_bytes: int = 2_000_000) -> str:
+    """Return only the raw file content (no header), decoded."""
+    with path.open("rb") as f:
+        data = f.read(max_bytes)
+    return data.decode("utf-8", errors="replace")
+
+def _file_raw_paged_text(path: Path, max_bytes: int = 2_000_000) -> str:
+    """Return header + raw content for paged viewing."""
+    if not path.exists():
+        return f"(missing) {path}\n"
+    size = path.stat().st_size
+    lines = [f"Showing: {path} ({size} bytes)"]
+    if size > max_bytes:
+        lines.append(f"File is large; showing first {max_bytes} bytes.")
+    lines.append(_file_raw_payload_text(path, max_bytes))
+    return "\n".join(lines)
+
+def page_text(text: str):
+    """Send text through a pager if possible; otherwise print."""
+    # Try Rich pager first (supports ANSI, handles long output nicely)
+    if _console_global:
+        try:
+            with _console_global.pager(styles=True):
+                print(text, end="" if text.endswith("\n") else "\n")
+            return
+        except Exception:
+            pass
+    # Fall back to stdlib pager
+    try:
+        import pydoc
+        pydoc.pager(text)
+        return
+    except Exception:
+        pass
+    # Last resort: plain print
+    print(text, end="" if text.endswith("\n") else "\n")
+
 def list_dirs(p: Path):
     return sorted([d for d in p.iterdir() if d.is_dir()], key=lambda d: d.name)
 
@@ -296,6 +340,15 @@ def build_netexec_cmd(exec_bin: str, protocol: str, ips_file: Path, oabase: Path
 def copy_to_clipboard(s: str) -> tuple:
     """Best-effort cross-platform clipboard.
     Returns (ok, detail_message)."""
+    # Prefer pyperclip if available
+    try:
+        if pyperclip is not None:
+            pyperclip.copy(s)
+            return True, 'Copied using pyperclip.'
+    except Exception as e:
+        # Fall through to tool-based methods
+        pass
+
     enc = s.encode('utf-8')
     try:
         if sys.platform.startswith('darwin') and shutil.which('pbcopy'):
@@ -316,7 +369,7 @@ def copy_to_clipboard(s: str) -> tuple:
         return False, f'Clipboard tool failed (exit {e.returncode}).'
     except Exception as e:
         return False, f'Clipboard error: {e}'
-    return False, 'No suitable clipboard tool found.'
+    return False, 'No suitable clipboard method found.'
 
 def command_review_menu(cmd_list_or_str):
     """Display a small menu: run / copy / cancel."""
@@ -1000,6 +1053,20 @@ def print_grouped_hosts_ports(path: Path):
     except Exception as e:
         warn(f"Error grouping hosts/ports: {e}")
 
+def _grouped_payload_text(path: Path) -> str:
+    """Return grouped host:port lines only (no header), suitable for clipboard."""
+    hosts, _ports, combos, _had_explicit = parse_file_hosts_ports_detailed(path)
+    out = []
+    for h in hosts:
+        plist = sorted(combos[h], key=lambda x: int(x)) if combos[h] else []
+        out.append(f"{h}:{','.join(plist)}" if plist else h)
+    return "\n".join(out) + ("\n" if out else "")
+
+def _grouped_paged_text(path: Path) -> str:
+    """Header + grouped host:port lines (for pager)."""
+    body = _grouped_payload_text(path)
+    return f"Grouped view: {path.name}\n{body}"
+
 # ---------- Run tools with a Rich spinner (streams output) ----------
 def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[str] = None) -> int:
     """
@@ -1456,15 +1523,29 @@ def main(args):
                     if ports_str:
                         info(f"Ports detected: {ports_str}")
 
-                    # Offer to view file (Raw / Grouped / None)
+                    # Offer to view/copy file (Raw / Grouped / None)
                     try:
-                        view_choice = input("\nView file? [R]aw / [G]rouped / [N]one (default=N): ").strip().lower()
+                        view_choice = input("\nView file? [R]aw / [G]rouped / [C] Copy / [N]one (default=N): ").strip().lower()
                     except KeyboardInterrupt:
                         continue
                     if view_choice in ("r", "raw"):
-                        safe_print_file(chosen)
+                        text = _file_raw_paged_text(chosen)
+                        page_text(text)
                     elif view_choice in ("g", "grouped"):
-                        print_grouped_hosts_ports(chosen)
+                        text = _grouped_paged_text(chosen)
+                        page_text(text)
+                    elif view_choice in ("c", "copy"):
+                        sub = input("Copy [R]aw or [G]rouped? (default=G): ").strip().lower()
+                        if sub in ("", "g", "grouped"):
+                            payload = _grouped_payload_text(chosen)
+                        else:
+                            payload = _file_raw_payload_text(chosen)
+                        ok_flag, detail = copy_to_clipboard(payload)
+                        if ok_flag:
+                            ok("Copied to clipboard.")
+                        else:
+                            warn(f"{detail} Printing below for manual copy:")
+                            print(payload)
 
                     # Track if we already asked about marking, to avoid double prompt
                     completion_decided = False
@@ -1939,15 +2020,29 @@ def main(args):
                 if ports_str:
                     info(f"Ports detected: {ports_str}")
 
-                # Offer to view file (Raw / Grouped / None)
+                # Offer to view/copy file (Raw / Grouped / None)
                 try:
-                    view_choice = input("\nView file? [R]aw / [G]rouped / [N]one (default=N): ").strip().lower()
+                    view_choice = input("\nView file? [R]aw / [G]rouped / [C] Copy / [N]one (default=N): ").strip().lower()
                 except KeyboardInterrupt:
                     continue
                 if view_choice in ("r", "raw"):
-                    safe_print_file(chosen)
+                    text = _file_raw_paged_text(chosen)
+                    page_text(text)
                 elif view_choice in ("g", "grouped"):
-                    print_grouped_hosts_ports(chosen)
+                    text = _grouped_paged_text(chosen)
+                    page_text(text)
+                elif view_choice in ("c", "copy"):
+                    sub = input("Copy [R]aw or [G]rouped? (default=G): ").strip().lower()
+                    if sub in ("", "g", "grouped"):
+                        payload = _grouped_payload_text(chosen)
+                    else:
+                        payload = _file_raw_payload_text(chosen)
+                    ok_flag, detail = copy_to_clipboard(payload)
+                    if ok_flag:
+                        ok("Copied to clipboard.")
+                    else:
+                        warn(f"{detail} Printing below for manual copy:")
+                        print(payload)
 
                 completion_decided = False
 
@@ -2238,6 +2333,7 @@ if typer:
         file: Path = typer.Argument(..., exists=True, readable=True),
         grouped: bool = typer.Option(False, "--grouped", "-g", help="Show host:port,port,..."),
     ):
+        # Keep CLI 'view' behavior unchanged (no forced pager), per your ask.
         if grouped:
             print_grouped_hosts_ports(file)
         else:
