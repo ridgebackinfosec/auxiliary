@@ -191,7 +191,7 @@ def _file_raw_paged_text(path: Path, max_bytes: int = 2_000_000) -> str:
 
 def page_text(text: str):
     """Send text through a pager if possible; otherwise print."""
-    # Try Rich pager first (supports ANSI, handles long output nicely)
+    # (kept for CLI 'view' command; interactive flow now uses menu_pager below)
     if _console_global:
         try:
             with _console_global.pager(styles=True):
@@ -199,15 +199,70 @@ def page_text(text: str):
             return
         except Exception:
             pass
-    # Fall back to stdlib pager
     try:
         import pydoc
         pydoc.pager(text)
         return
     except Exception:
         pass
-    # Last resort: plain print
     print(text, end="" if text.endswith("\n") else "\n")
+
+# NEW: interactive pager matching file list UX
+def _default_page_size() -> int:
+    """
+    Heuristic page size based on terminal height.
+    Reserves ~10 lines for headers/prompts; never below 8.
+    """
+    try:
+        h = shutil.get_terminal_size((80, 24)).lines
+        return max(8, h - 10)
+    except Exception:
+        return 12
+
+def menu_pager(text: str, page_size: Optional[int] = None):
+    """
+    Interactive pager that uses [N] Next / [P] Prev / [B] Back,
+    mirroring the file-selection menu UX.
+    """
+    lines = text.splitlines()
+    if not lines:
+        return
+    ps = page_size or _default_page_size()
+    idx = 0
+    total_pages = max(1, math.ceil(len(lines) / ps))
+    while True:
+        start = idx * ps
+        end = start + ps
+        chunk = lines[start:end]
+        # page header/status
+        print(f"\nPage {idx+1}/{total_pages} — lines {start+1}-{min(end, len(lines))} of {len(lines)}")
+        print("─" * 80)
+        print("\n".join(chunk))
+        print("─" * 80)
+        print(fmt_action("[N] Next page / [P] Prev page / [B] Back"))
+        try:
+            ans = input("Action: ").strip().lower()
+        except KeyboardInterrupt:
+            warn("\nInterrupted — returning.")
+            return
+        if ans in ("b", "back", "q", "x"):
+            return
+        if ans in ("n", "next"):
+            if idx + 1 < total_pages:
+                idx += 1
+            else:
+                warn("Already at last page.")
+            continue
+        if ans in ("p", "prev", "previous"):
+            if idx > 0:
+                idx -= 1
+            else:
+                warn("Already at first page.")
+            continue
+        if ans == "":
+            # Treat Enter as 'Back' to keep it simple.
+            return
+        warn("Use N (next), P (prev), or B (back).")
 
 def list_dirs(p: Path):
     return sorted([d for d in p.iterdir() if d.is_dir()], key=lambda d: d.name)
@@ -579,18 +634,6 @@ def _rich_total_cell(n: int) -> Any:
         t.stylize("bold")
         return t
     return str(n)
-
-# ---------- Pager helpers ----------
-def _default_page_size() -> int:
-    """
-    Heuristic page size based on terminal height.
-    Reserves ~10 lines for headers/prompts; never below 8.
-    """
-    try:
-        h = shutil.get_terminal_size((80, 24)).lines
-        return max(8, h - 10)
-    except Exception:
-        return 12
 
 # ---------- Rich table helpers (scan, severity, files, compare) ----------
 def _render_scan_table(scans):
@@ -1553,10 +1596,10 @@ def main(args):
                         continue
                     if view_choice in ("r", "raw"):
                         text = _file_raw_paged_text(chosen)
-                        page_text(text)
+                        menu_pager(text)
                     elif view_choice in ("g", "grouped"):
                         text = _grouped_paged_text(chosen)
-                        page_text(text)
+                        menu_pager(text)
                     elif view_choice in ("c", "copy"):
                         sub = input("Copy [R]aw or [G]rouped? (default=G): ").strip().lower()
                         if sub in ("", "g", "grouped"):
@@ -2054,10 +2097,10 @@ def main(args):
                     continue
                 if view_choice in ("r", "raw"):
                     text = _file_raw_paged_text(chosen)
-                    page_text(text)
+                    menu_pager(text)
                 elif view_choice in ("g", "grouped"):
                     text = _grouped_paged_text(chosen)
-                    page_text(text)
+                    menu_pager(text)
                 elif view_choice in ("c", "copy"):
                     sub = input("Copy [R]aw or [G]rouped? (default=G): ").strip().lower()
                     if sub in ("", "g", "grouped"):
