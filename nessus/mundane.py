@@ -223,18 +223,28 @@ def menu_pager(text: str, page_size: Optional[int] = None):
     """
     Interactive pager that uses [N] Next / [P] Prev / [B] Back,
     mirroring the file-selection menu UX.
+    Auto-exits without prompts when there’s only a single page.
     """
     lines = text.splitlines()
     if not lines:
         return
     ps = page_size or _default_page_size()
-    idx = 0
     total_pages = max(1, math.ceil(len(lines) / ps))
+
+    # Single page: show once, no controls, no input required.
+    if total_pages == 1:
+        print(f"\nPage 1/1 — lines 1-{len(lines)} of {len(lines)}")
+        print("─" * 80)
+        print("\n".join(lines))
+        print("─" * 80)
+        return
+
+    # Multi-page navigation
+    idx = 0
     while True:
         start = idx * ps
         end = start + ps
         chunk = lines[start:end]
-        # page header/status
         print(f"\nPage {idx+1}/{total_pages} — lines {start+1}-{min(end, len(lines))} of {len(lines)}")
         print("─" * 80)
         print("\n".join(chunk))
@@ -2368,7 +2378,8 @@ def legacy_entry():
 
 # Build Typer app only if available
 if typer:
-    app = typer.Typer(no_args_is_help=True, add_completion=True, help="mundane — faster review & tooling runner")
+    # IMPORTANT: disable Typer's built-in completion flags
+    app = typer.Typer(no_args_is_help=True, add_completion=False, help="mundane — faster review & tooling runner")
     _console = Console()
 
     @app.callback()
@@ -2428,10 +2439,7 @@ if typer:
         if not files:
             err("No plugin files found for comparison.")
             raise typer.Exit(1)
-        groups = compare_filtered(files)
-        if Table is None:
-            # Fallback plain print (compare_filtered already printed details)
-            return
+        _ = compare_filtered(files)
         # compare_filtered already prints Rich tables; nothing else to do here.
 
     @app.command(help="Show a scan summary for a scan directory.")
@@ -2440,87 +2448,6 @@ if typer:
         top_ports: int = typer.Option(5, "--top-ports", "-n", min=1, help="How many top ports to show."),
     ):
         show_scan_summary(scan_dir, top_ports_n=top_ports)
-
-    # -------- Completion subcommand --------
-    def _detect_shell_name() -> str:
-        """Best-effort shell detection; defaults to bash on *nix and pwsh on Windows."""
-        if os.name == "nt":
-            return "pwsh"
-        sh = os.environ.get("SHELL", "")
-        base = Path(sh).name if sh else ""
-        if base in ("bash", "zsh", "fish"):
-            return base
-        return base or "bash"
-
-    def _env_for_shell(shell_name: str) -> dict:
-        """Prepare env so Typer's built-ins detect the intended shell."""
-        env = os.environ.copy()
-        if os.name != "nt":
-            # Point SHELL to a plausible path for the given shell
-            mapping = {
-                "bash": "/bin/bash",
-                "zsh": "/bin/zsh",
-                "fish": "/usr/bin/fish",
-            }
-            env["SHELL"] = mapping.get(shell_name, env.get("SHELL", "/bin/bash"))
-        return env
-
-    @app.command(help="Install or show shell completions (wrapper over Typer's built-ins).")
-    def completion(
-        install: bool = typer.Option(False, "--install", "-i", help="Install completion for your shell."),
-        show: bool = typer.Option(False, "--show", help="Print the completion script for your shell."),
-        shell: Optional[str] = typer.Option(None, "--shell", "-S", help="Override shell: bash|zsh|fish|pwsh"),
-    ):
-        """
-        Examples:
-          mundane completion --install
-          mundane completion --show
-          mundane completion --install --shell zsh
-        """
-        shell_name = (shell or _detect_shell_name()).lower()
-        if shell_name not in ("bash", "zsh", "fish", "pwsh", "powershell"):
-            err(f"Unknown shell '{shell_name}'. Use one of: bash, zsh, fish, pwsh.")
-            raise typer.Exit(2)
-        if shell_name == "powershell":
-            shell_name = "pwsh"
-
-        if not install and not show:
-            _console.print("Use [bold]--install[/] to install completions or [bold]--show[/] to print the script.", style="cyan")
-            _console.print("You can also run: [bold]mundane --install-completion[/] or [bold]mundane --show-completion[/].")
-            raise typer.Exit(0)
-
-        env = _env_for_shell(shell_name)
-        prog = [sys.executable, os.path.abspath(__file__)]
-
-        if install:
-            try:
-                subprocess.run(prog + ["--install-completion"], env=env, check=True)
-                ok(f"Completion installed for {shell_name}.")
-                if shell_name == "zsh":
-                    info("Reload with: source ~/.zshrc")
-                elif shell_name == "bash":
-                    info("Reload with: source ~/.bashrc  (or ~/.bash_profile on macOS)")
-                elif shell_name == "fish":
-                    info("Reload with: exec fish")
-                elif shell_name == "pwsh":
-                    info("Restart PowerShell or open a new session.")
-            except subprocess.CalledProcessError as e:
-                err(f"Install failed (exit {e.returncode}). You can try: mundane --install-completion")
-                raise typer.Exit(e.returncode)
-
-        if show:
-            try:
-                res = subprocess.run(prog + ["--show-completion"], env=env, check=True, capture_output=True, text=True)
-                print(res.stdout.rstrip("\n"))
-                if shell_name in ("bash", "zsh"):
-                    info(f"\nOne-shot enable in this session:\n  eval \"$(mundane --show-completion)\"")
-                elif shell_name == "fish":
-                    info(f"\nOne-shot enable in this session:\n  mundane --show-completion | source")
-                elif shell_name == "pwsh":
-                    info(f"\nOne-shot enable in this session:\n  mundane --show-completion | Invoke-Expression")
-            except subprocess.CalledProcessError as e:
-                err(f"Show failed (exit {e.returncode}). You can try: mundane --show-completion")
-                raise typer.Exit(e.returncode)
 
 if __name__ == "__main__":
     # If Typer is available and user didn't explicitly ask for argparse path, run the modern CLI.
