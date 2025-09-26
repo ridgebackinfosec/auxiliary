@@ -1,21 +1,39 @@
 #!/usr/bin/env python3
 # mundane.py
-import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, argparse
+
+import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, types, math
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict, Counter
+from typing import Any, Optional
+
+# === Required dependencies (no fallbacks) ===
+import typer
+from rich.console import Console
+from rich.table import Table
+from rich.traceback import install as rich_tb_install
+from rich import box
+from rich.text import Text
+from rich.progress import Progress, SpinnerColumn, TextColumn as ProgTextColumn, TimeElapsedColumn
+import pyperclip  # required
+
+# Create a console for the interactive flow
+_console_global = Console()
+
+# Install pretty tracebacks (no try/except; fail loudly if Rich is absent)
+rich_tb_install(show_locals=False)
 
 # ========== Colors & helpers ==========
 NO_COLOR = (os.environ.get("NO_COLOR") is not None) or (os.environ.get("TERM") == "dumb")
 class C:
-    RESET  = "" if NO_COLOR else "\033[0m"
-    BOLD   = "" if NO_COLOR else "\033[1m"
-    BLUE   = "" if NO_COLOR else "\033[34m"
-    GREEN  = "" if NO_COLOR else "\033[32m"
-    YELLOW = "" if NO_COLOR else "\033[33m"
-    RED    = "" if NO_COLOR else "\033[31m"
-    CYAN   = "" if NO_COLOR else "\033[36m"
-    MAGENTA= "" if NO_COLOR else "\033[35m"
+    RESET  = "" if NO_COLOR else "\u001b[0m"
+    BOLD   = "" if NO_COLOR else "\u001b[1m"
+    BLUE   = "" if NO_COLOR else "\u001b[34m"
+    GREEN  = "" if NO_COLOR else "\u001b[32m"
+    YELLOW = "" if NO_COLOR else "\u001b[33m"
+    RED    = "" if NO_COLOR else "\u001b[31m"
+    CYAN   = "" if NO_COLOR else "\u001b[36m"
+    MAGENTA= "" if NO_COLOR else "\u001b[35m"
 
 def header(msg): print(f"{C.BOLD}{C.BLUE}\n{msg}{C.RESET}")
 def ok(msg):     print(f"{C.GREEN}{msg}{C.RESET}")
@@ -27,7 +45,6 @@ def fmt_reviewed(text): return f"{C.MAGENTA}{text}{C.RESET}"
 def cyan_label(s: str) -> str: return f"{C.CYAN}{s}{C.RESET}"
 
 def colorize_severity_label(label: str) -> str:
-    """Return a bold, colorized severity label for visual pop."""
     L = label.strip().lower()
     if "critical" in L:
         color = C.RED
@@ -49,7 +66,6 @@ def require_cmd(name):
         sys.exit(1)
 
 def resolve_cmd(candidates):
-    """Return the first available binary from candidates, or None."""
     for c in candidates:
         if shutil.which(c):
             return c
@@ -101,14 +117,102 @@ def safe_print_file(path: Path, max_bytes: int = 2_000_000):
         header(f"Showing: {path} ({size} bytes)")
         if size > max_bytes:
             warn(f"File is large; showing first {max_bytes} bytes.")
-        with path.open("rb") as f:
-            data = f.read(max_bytes)
+        with Progress(
+            SpinnerColumn(style="cyan"),
+            ProgTextColumn("[progress.description]{task.description}"),
+            TimeElapsedColumn(),
+            console=_console_global,
+            transient=True,
+        ) as progress:
+            progress.add_task("Reading file...", start=True)
+            with path.open("rb") as f:
+                data = f.read(max_bytes)
         try:
             print(data.decode("utf-8", errors="replace"))
         except Exception:
             print(data)
     except Exception as e:
         warn(f"Could not display file: {e}")
+
+# === Paged viewing helpers (Raw / Grouped) ===
+def _file_raw_payload_text(path: Path, max_bytes: int = 2_000_000) -> str:
+    with path.open("rb") as f:
+        data = f.read(max_bytes)
+    return data.decode("utf-8", errors="replace")
+
+def _file_raw_paged_text(path: Path, max_bytes: int = 2_000_000) -> str:
+    if not path.exists():
+        return f"(missing) {path}\n"
+    size = path.stat().st_size
+    lines = [f"Showing: {path} ({size} bytes)"]
+    if size > max_bytes:
+        lines.append(f"File is large; showing first {max_bytes} bytes.")
+    lines.append(_file_raw_payload_text(path, max_bytes))
+    return "\n".join(lines)
+
+def page_text(text: str):
+    """Send text through a pager if possible; otherwise print."""
+    with _console_global.pager(styles=True):
+        print(text, end="" if text.endswith("\n") else "\n")
+
+def _default_page_size() -> int:
+    try:
+        h = shutil.get_terminal_size((80, 24)).lines
+        return max(8, h - 10)
+    except Exception:
+        return 12
+
+def menu_pager(text: str, page_size: Optional[int] = None):
+    """
+    Interactive pager that uses [N] Next / [P] Prev / [B] Back,
+    mirroring the file-selection menu UX.
+    Auto-exits without prompts when there’s only a single page.
+    """
+    lines = text.splitlines()
+    if not lines:
+        return
+    ps = page_size or _default_page_size()
+    total_pages = max(1, math.ceil(len(lines) / ps))
+
+    if total_pages == 1:
+        print(f"\nPage 1/1 — lines 1-{len(lines)} of {len(lines)}")
+        print("─" * 80)
+        print("\n".join(lines))
+        print("─" * 80)
+        return
+
+    idx = 0
+    while True:
+        start = idx * ps
+        end = start + ps
+        chunk = lines[start:end]
+        print(f"\nPage {idx+1}/{total_pages} — lines {start+1}-{min(end, len(lines))} of {len(lines)}")
+        print("─" * 80)
+        print("\n".join(chunk))
+        print("─" * 80)
+        print(fmt_action("[N] Next page / [P] Prev page / [B] Back"))
+        try:
+            ans = input("Action: ").strip().lower()
+        except KeyboardInterrupt:
+            warn("\nInterrupted — returning.")
+            return
+        if ans in ("b", "back", "q", "x"):
+            return
+        if ans in ("n", "next"):
+            if idx + 1 < total_pages:
+                idx += 1
+            else:
+                warn("Already at last page.")
+            continue
+        if ans in ("p", "prev", "previous"):
+            if idx > 0:
+                idx -= 1
+            else:
+                warn("Already at first page.")
+            continue
+        if ans == "":
+            return
+        warn("Use N (next), P (prev), or B (back).")
 
 def list_dirs(p: Path):
     return sorted([d for d in p.iterdir() if d.is_dir()], key=lambda d: d.name)
@@ -134,7 +238,6 @@ def split_host_port(token: str):
         if m:
             return m.group(1), (m.group(2) if m.group(2) else None)
     if token.count(":") >= 2 and not re.search(r"]:\d+$", token):
-        # Bare IPv6 (no port)
         return token, None
     if ":" in token:
         h, p = token.rsplit(":", 1)
@@ -158,12 +261,12 @@ def parse_hosts_ports(lines):
             hosts.append(host)
             if port:
                 ports.add(port)
-    hosts = list(dict.fromkeys(hosts))  # preserve order, dedupe
+    hosts = list(dict.fromkeys(hosts))
     ports_str = ",".join(sorted(ports, key=lambda x: int(x))) if ports else ""
     return hosts, ports_str
 
 def parse_file_hosts_ports_detailed(path: Path):
-    """Return (hosts_order_preserved, ports_set, combos_map: host->set(ports), had_explicit_ports: bool)."""
+    """Return (hosts_order_preserved, ports_set, combos_map, had_explicit_ports)."""
     hosts = []
     ports = set()
     combos = defaultdict(set)
@@ -212,22 +315,13 @@ def build_nmap_cmd(udp, nse_option, ips_file, ports_str, use_sudo, oabase: Path)
         cmd.append("-sU")
     if ports_str:
         cmd += ["-p", ports_str]
-    # Always write results
     cmd += ["-oA", str(oabase)]
     return cmd
 
 def build_netexec_cmd(exec_bin: str, protocol: str, ips_file: Path, oabase: Path):
-    """
-    NetExec command builder.
-    - Passes the targets file as a positional argument (no -iL).
-    - Always logs to {oabase}.nxc.<protocol>.log
-    - SMB adds --gen-relay-list and --shares, writing the relay list into the artifacts area.
-    Returns: (cmd_list, log_path, relay_path_or_None)
-    """
     log_path = f"{str(oabase)}.nxc.{protocol}.log"
     relay_path = None
     if protocol == "smb":
-        # Write the relay list next to other run artifacts
         relay_path = f"{str(oabase)}.SMB_Signing_not_required_targets.txt"
         cmd = [
             exec_bin, "smb", str(ips_file),
@@ -239,30 +333,50 @@ def build_netexec_cmd(exec_bin: str, protocol: str, ips_file: Path, oabase: Path
         cmd = [exec_bin, protocol, str(ips_file), "--log", log_path]
     return cmd, log_path, relay_path
 
+# ---------- Plugin details link helpers ----------
+PLUGIN_DETAILS_BASE = "https://www.tenable.com/plugins/nessus/"
+
+def _plugin_id_from_filename(name_or_path: Any) -> Optional[str]:
+    name = name_or_path.name if isinstance(name_or_path, Path) else str(name_or_path)
+    lower = name.lower()
+    if lower.startswith(("review_complete", "review-complete")) and "-" in name:
+        name = name.split("-", 1)[1]
+    m = re.match(r"^(\d+)", name)
+    return m.group(1) if m else None
+
+def _plugin_details_line(path: Path) -> Optional[str]:
+    pid = _plugin_id_from_filename(path)
+    if pid:
+        return f"Plugin Details: {PLUGIN_DETAILS_BASE}{pid}"
+    return None
+
 def copy_to_clipboard(s: str) -> tuple:
-    """Best-effort cross-platform clipboard.
-    Returns (ok, detail_message)."""
-    enc = s.encode('utf-8')
+    """Clipboard via pyperclip; OS tool fallback if runtime environment blocks it."""
     try:
-        if sys.platform.startswith('darwin') and shutil.which('pbcopy'):
-            subprocess.run(['pbcopy'], input=enc, check=True)
-            return True, 'Copied using pbcopy.'
-        if os.name == 'nt' and shutil.which('clip'):
-            subprocess.run(['clip'], input=enc, check=True)
-            return True, 'Copied using clip.'
-        for tool, args in (
-            ('xclip', ['xclip', '-selection', 'clipboard']),
-            ('wl-copy', ['wl-copy']),
-            ('xsel', ['xsel', '--clipboard', '--input']),
-        ):
-            if shutil.which(tool):
-                subprocess.run(args, input=enc, check=True)
-                return True, f'Copied using {tool}.'
-    except subprocess.CalledProcessError as e:
-        return False, f'Clipboard tool failed (exit {e.returncode}).'
-    except Exception as e:
-        return False, f'Clipboard error: {e}'
-    return False, 'No suitable clipboard tool found.'
+        pyperclip.copy(s)
+        return True, 'Copied using pyperclip.'
+    except Exception:
+        enc = s.encode('utf-8')
+        try:
+            if sys.platform.startswith('darwin') and shutil.which('pbcopy'):
+                subprocess.run(['pbcopy'], input=enc, check=True)
+                return True, 'Copied using pbcopy.'
+            if os.name == 'nt' and shutil.which('clip'):
+                subprocess.run(['clip'], input=enc, check=True)
+                return True, 'Copied using clip.'
+            for tool, args in (
+                ('xclip', ['xclip', '-selection', 'clipboard']),
+                ('wl-copy', ['wl-copy']),
+                ('xsel', ['xsel', '--clipboard', '--input']),
+            ):
+                if shutil.which(tool):
+                    subprocess.run(args, input=enc, check=True)
+                    return True, f'Copied using {tool}.'
+        except subprocess.CalledProcessError as e:
+            return False, f'Clipboard tool failed (exit {e.returncode}).'
+        except Exception as e:
+            return False, f'Clipboard error: {e}'
+    return False, 'No suitable clipboard method found.'
 
 def command_review_menu(cmd_list_or_str):
     """Display a small menu: run / copy / cancel."""
@@ -288,7 +402,6 @@ def command_review_menu(cmd_list_or_str):
         warn("Enter 1, 2, or 3.")
 
 def _count_severity_files(d: Path):
-    """Return (unreviewed_count, reviewed_count, total)."""
     files = [f for f in list_files(d) if f.suffix.lower() == ".txt"]
     reviewed = [f for f in files if f.name.lower().startswith(("review_complete", "review-complete"))]
     reviewed += [f for f in files if f.name.lower().startswith(("review_complete-", "review-complete-"))]
@@ -302,7 +415,6 @@ def _color_unreviewed(n: int) -> str:
     return f"{C.RED}{n}{C.RESET}"
 
 def pretty_severity_label(name: str) -> str:
-    """Convert '4_Critical' -> 'Critical'."""
     m = re.match(r"^\d+_(.+)$", name)
     label = m.group(1) if m else name
     label = label.replace("_", " ").strip()
@@ -352,8 +464,8 @@ NSE_PROFILES = [
     ("Crypto", ["ssl-enum-ciphers", "ssl-cert", "ssl-date"], False),
     ("SSH",    ["ssh2-enum-algos", "ssh-auth-methods"], False),
     ("SMB",    ["smb-security-mode", "smb2-security-mode"], False),
-    ("SNMP",   ["snmp*"], True),            # requires UDP
-    ("IPMI",   ["ipmi-version"], True),     # requires UDP
+    ("SNMP",   ["snmp*"], True),
+    ("IPMI",   ["ipmi-version"], True),
 ]
 
 def choose_nse_profile():
@@ -391,30 +503,146 @@ def build_results_paths(scan_dir: Path, sev_dir: Path, plugin_filename: str):
 
 # ====== Compare hosts/ports across filtered files ======
 def _normalize_combos(hosts, ports_set, combos_map, had_explicit):
-    """
-    Produce a canonical representation for comparison:
-    - If explicit combos were present, use them.
-    - Otherwise, assume each host pairs with the global ports_set.
-    Returns sorted tuple of (host, sorted_ports_tuple).
-    """
     if had_explicit and combos_map:
         items = []
         for h in hosts:
             ps = combos_map.get(h, set())
             items.append((h, tuple(sorted(ps, key=lambda x: int(x)))))
         return tuple(items)
-    # No explicit combos -> assume all hosts share the global ports_set (possibly empty)
     assumed = tuple(sorted(
         (h, tuple(sorted(ports_set, key=lambda x: int(x))))
         for h in hosts
     ))
     return assumed
 
+# ---------- Rich style helpers ----------
+def _severity_style(label: str) -> str:
+    l = label.strip().lower()
+    if "critical" in l: return "red"
+    if "high"     in l: return "yellow"
+    if "medium"   in l: return "magenta"
+    if "low"      in l: return "green"
+    if "info"     in l: return "cyan"
+    return "magenta"
+
+def _rich_severity_cell(label: str) -> Any:
+    t = Text(label)
+    t.stylize("bold")
+    t.stylize(_severity_style(label))
+    return t
+
+def _rich_unreviewed_cell(n: int) -> Any:
+    t = Text(str(n))
+    if n == 0:
+        t.stylize("green")
+    elif n <= 10:
+        t.stylize("yellow")
+    else:
+        t.stylize("red")
+    return t
+
+def _rich_reviewed_cell(n: int) -> Any:
+    t = Text(str(n))
+    t.stylize("magenta")
+    return t
+
+def _rich_total_cell(n: int) -> Any:
+    t = Text(str(n))
+    t.stylize("bold")
+    return t
+
+def _render_scan_table(scans):
+    table = Table(title=None, box=box.SIMPLE, show_lines=False, pad_edge=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("Scan")
+    for i, sdir in enumerate(scans, 1):
+        table.add_row(str(i), sdir.name)
+    _console_global.print(table)
+
+def _render_severity_table(severities, msf_summary=None):
+    table = Table(title=None, box=box.SIMPLE, show_lines=False, pad_edge=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("Severity", no_wrap=True)
+    table.add_column("Unreviewed", justify="right", no_wrap=True)
+    table.add_column("Reviewed", justify="right", no_wrap=True)
+    table.add_column("Total", justify="right", no_wrap=True)
+
+    for i, sd in enumerate(severities, 1):
+        unrev, rev, tot = _count_severity_files(sd)
+        label = pretty_severity_label(sd.name)
+        table.add_row(
+            str(i),
+            _rich_severity_cell(label),
+            _rich_unreviewed_cell(unrev),
+            _rich_reviewed_cell(rev),
+            _rich_total_cell(tot),
+        )
+
+    if msf_summary:
+        idx, unrev, rev, tot = msf_summary
+        table.add_row(
+            str(idx),
+            _rich_severity_cell("Metasploit Module"),
+            _rich_unreviewed_cell(unrev),
+            _rich_reviewed_cell(rev),
+            _rich_total_cell(tot),
+        )
+
+    _console_global.print(table)
+
+def _render_file_list_table(display, sort_mode, get_counts_for, row_offset: int = 0):
+    table = Table(title=None, box=box.SIMPLE, show_lines=False, pad_edge=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("File")
+    if sort_mode == "hosts":
+        table.add_column("Hosts", justify="right", no_wrap=True)
+
+    for i, f in enumerate(display, 1):
+        n = row_offset + i
+        if sort_mode == "hosts":
+            hc, _ps = get_counts_for(f)
+            table.add_row(str(n), f.name, str(hc))
+        else:
+            table.add_row(str(n), f.name)
+
+    _console_global.print(table)
+
+def _render_compare_tables(parsed, host_intersection, host_union, port_intersection, port_union, same_hosts, same_ports, same_combos, groups_sorted):
+    summary = Table(title=None, box=box.SIMPLE, show_lines=False, pad_edge=False)
+    summary.add_column("Aspect")
+    summary.add_column("Equal Across Files", justify="center", no_wrap=True)
+    summary.add_column("Intersection Size", justify="right", no_wrap=True)
+    summary.add_column("Union Size", justify="right", no_wrap=True)
+    summary.add_row("Hosts", "✅" if same_hosts else "❌", str(len(host_intersection)), str(len(host_union)))
+    summary.add_row("Ports", "✅" if same_ports else "❌", str(len(port_intersection)), str(len(port_union)))
+    summary.add_row("Host:Port Combos", "✅" if same_combos else "❌", "-", "-")
+    _console_global.print(summary)
+
+    files_tbl = Table(title="Filtered Files", box=box.SIMPLE, show_lines=False, pad_edge=False)
+    files_tbl.add_column("#", justify="right", no_wrap=True)
+    files_tbl.add_column("File")
+    files_tbl.add_column("Hosts", justify="right", no_wrap=True)
+    files_tbl.add_column("Ports", justify="right", no_wrap=True)
+    files_tbl.add_column("Explicit combos?", justify="center", no_wrap=True)
+
+    for i, (f, hosts, ports_set, combos, had_explicit) in enumerate(parsed, 1):
+        files_tbl.add_row(str(i), f.name, str(len(hosts)), str(len(ports_set)), "Yes" if had_explicit else "No")
+
+    _console_global.print(files_tbl)
+
+    if len(groups_sorted) > 1:
+        groups = Table(title="Identical Host:Port Groups", box=box.SIMPLE, show_lines=False, pad_edge=False)
+        groups.add_column("#", justify="right", no_wrap=True)
+        groups.add_column("File count", justify="right", no_wrap=True)
+        groups.add_column("Files (sample)")
+        for i, names in enumerate(groups_sorted, 1):
+            sample = "\n".join(names[:8]) + (f"\n... (+{len(names)-8} more)" if len(names) > 8 else "")
+            groups.add_row(str(i), str(len(names)), sample)
+        _console_global.print(groups)
+    else:
+        info("\nAll filtered files fall into a single identical group.")
+
 def compare_filtered(files):
-    """
-    Print a concise comparison report for the given plugin files.
-    Returns: list[list[str]] groups, sorted by size DESC (each inner list is file names in that group).
-    """
     if not files:
         warn("No files selected for comparison.")
         return []
@@ -422,13 +650,20 @@ def compare_filtered(files):
     header("Filtered Files: Host/Port Comparison")
     info(f"Files compared: {len(files)}")
 
-    # Parse all
     parsed = []
-    for f in files:
-        hosts, ports_set, combos, had_explicit = parse_file_hosts_ports_detailed(f)
-        parsed.append((f, hosts, ports_set, combos, had_explicit))
+    with Progress(
+        SpinnerColumn(style="cyan"),
+        ProgTextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=_console_global,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Parsing files for comparison...", total=len(files))
+        for f in files:
+            hosts, ports_set, combos, had_explicit = parse_file_hosts_ports_detailed(f)
+            parsed.append((f, hosts, ports_set, combos, had_explicit))
+            progress.advance(task)
 
-    # Compute set-level intersections/unions
     all_host_sets = [set(h) for _, h, _, _, _ in parsed]
     all_port_sets = [set(p) for _, _, p, _, _ in parsed]
     host_intersection = set.intersection(*all_host_sets) if all_host_sets else set()
@@ -436,7 +671,6 @@ def compare_filtered(files):
     port_intersection = set.intersection(*all_port_sets) if all_port_sets else set()
     port_union        = set.union(*all_port_sets) if all_port_sets else set()
 
-    # Canonical signatures (host-only, ports-only, and combos)
     host_sigs  = [tuple(sorted(h)) for _, h, _, _, _ in parsed]
     port_sigs  = [tuple(sorted(p, key=lambda x: int(x))) for _, _, p, _, _ in parsed]
     combo_sigs = [_normalize_combos(h, p, c, e) for _, h, p, c, e in parsed]
@@ -445,50 +679,39 @@ def compare_filtered(files):
     same_ports  = all(sig == port_sigs[0] for sig in port_sigs) if port_sigs else True
     same_combos = all(sig == combo_sigs[0] for sig in combo_sigs) if combo_sigs else True
 
-    # Summary
-    if same_hosts and same_ports and same_combos:
-        ok("All filtered files target the SAME hosts and ports (identical host:port combinations).")
-    else:
-        warn("Filtered files are NOT identical.")
-        info(f"- Same hosts across all:  {same_hosts}")
-        info(f"- Same ports across all:  {same_ports}")
-        info(f"- Same host:port combos:  {same_combos}")
-
-    # Show quick stats
-    info(f"\nHosts: intersection={len(host_intersection)}  union={len(host_union)}")
-    if host_intersection:
-        info("  ⋂ Example: " + ", ".join(list(sorted(host_intersection))[:5]) + (" ..." if len(host_intersection) > 5 else ""))
-    if host_union:
-        info("  ⋃ Example: " + ", ".join(list(sorted(host_union))[:5]) + (" ..." if len(host_union) > 5 else ""))
-    info(f"Ports: intersection={len(port_intersection)}  union={len(port_union)}")
-    if port_union:
-        info("  ⋃ Ports: " + ", ".join(sorted(port_union, key=lambda x: int(x))))
-
-    # Group files by identical combo signature
     groups_dict = defaultdict(list)
-    for (f, h, p, c, e), sig in zip(parsed, combo_sigs):
-        groups_dict[sig].append(f.name)
+    with Progress(
+        SpinnerColumn(style="cyan"),
+        ProgTextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=_console_global,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Grouping identical host:port combos...", total=len(parsed))
+        for (f, h, p, c, e), sig in zip(parsed, combo_sigs):
+            groups_dict[sig].append(f.name)
+            progress.advance(task)
 
-    # Sort groups by size (desc). Restart numbering from 1 every run.
-    groups_sorted = sorted(groups_dict.values(), key=lambda names: len(names), reverse=True)
+    with Progress(
+        SpinnerColumn(style="cyan"),
+        ProgTextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=_console_global,
+        transient=True,
+    ) as progress:
+        progress.add_task("Sorting groups...", start=True)
+        groups_sorted = sorted(groups_dict.values(), key=lambda names: len(names), reverse=True)
 
-    if len(groups_sorted) > 1:
-        header("Groups (files with identical host:port combos)")
-        for i, names in enumerate(groups_sorted, 1):
-            info(f"[Group {i}] {len(names)} file(s)")
-            for nm in names[:6]:
-                info(f"  - {nm}")
-            if len(names) > 6:
-                info(f"  - ... (+{len(names)-6} more)")
-    else:
-        info("\nAll filtered files fall into a single identical group.")
-
-    # Return groups as list of lists (sorted)
+    _render_compare_tables(
+        parsed,
+        host_intersection, host_union, port_intersection, port_union,
+        same_hosts, same_ports, same_combos,
+        groups_sorted
+    )
     return groups_sorted
 
 # -------- Sorting helpers for file list --------
 def natural_key(s: str):
-    """Natural sort key: splits digits for A10 < A2 issues."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
 
 # ====== Scan overview helpers ======
@@ -512,21 +735,10 @@ def _is_ipv6(s: str) -> bool:
         return False
 
 def _is_valid_token(tok: str):
-    """
-    Validate a token as host or host:port.
-    Returns (valid, host, port_or_None). Port is a string if present.
-    Valid forms:
-      - hostname
-      - IPv4
-      - IPv6 (bare)
-      - [IPv6]
-      - hostname:port / IPv4:port / [IPv6]:port
-    """
     tok = tok.strip()
     if not tok:
         return False, None, None
 
-    # [IPv6] or [IPv6]:port
     if tok.startswith("["):
         m = re.match(r"^\[(.+?)\](?::(\d+))?$", tok)
         if m and _is_ipv6(m.group(1)):
@@ -537,27 +749,22 @@ def _is_valid_token(tok: str):
                 return True, m.group(1), port
         return False, None, None
 
-    # Bare IPv6 (no port)
     if tok.count(":") >= 2 and not re.search(r"]:\d+$", tok):
         return (_is_ipv6(tok), tok if _is_ipv6(tok) else None, None)
 
-    # host[:port] (hostname or IPv4)
     if ":" in tok:
         h, p = tok.rsplit(":", 1)
         if p.isdigit() and 1 <= int(p) <= 65535 and (_is_hostname(h) or _is_ipv4(h)):
             return True, h, p
         return False, None, None
 
-    # host without port
     if _is_hostname(tok) or _is_ipv4(tok) or _is_ipv6(tok):
         return True, tok, None
 
     return False, None, None
 
 def _parse_for_overview(path: Path):
-    """Parse a file for overview metrics only (strict). Returns:
-       (hosts:list[str], ports:set[str], combos:dict[host]->set[port], had_explicit:bool, malformed_count:int)
-    """
+    """(hosts, ports:set, combos, had_explicit, malformed_count)"""
     hosts = []
     ports = set()
     combos = defaultdict(set)
@@ -592,10 +799,8 @@ def _count_reviewed_in_scan(scan_dir: Path):
     return total_files, reviewed_files
 
 def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
-    """Compute and print scan-level overview (shown right after choosing a scan) with cyan labels."""
     header(f"Scan Overview — {scan_dir.name}")
 
-    # Collect all TXT files across severities
     severities = list_dirs(scan_dir)
     all_files = []
     for sev in severities:
@@ -606,48 +811,51 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
     unique_hosts = set()
     ipv4_set = set()
     ipv6_set = set()
-    ports_counter = Counter()  # per-file prevalence
+    ports_counter = Counter()
     empties = 0
     malformed_total = 0
     combo_sig_counter = Counter()
 
-    for f in all_files:
-        hosts, ports, combos, had_explicit, malformed = _parse_for_overview(f)
-        malformed_total += malformed
-        if not hosts:
-            empties += 1
-        unique_hosts.update(hosts)
-        # Track IP versions (hostnames are ignored for v4/v6 split)
-        for h in hosts:
-            try:
-                ip = ipaddress.ip_address(h)
-                if isinstance(ip, ipaddress.IPv4Address):
-                    ipv4_set.add(h)
-                elif isinstance(ip, ipaddress.IPv6Address):
-                    ipv6_set.add(h)
-            except Exception:
-                pass
-        # per-file port prevalence
-        for p in ports:
-            ports_counter[p] += 1
-        # identical host:port cluster signature
-        sig = _normalize_combos(hosts, ports, combos, had_explicit)
-        combo_sig_counter[sig] += 1
+    with Progress(
+        SpinnerColumn(style="cyan"),
+        ProgTextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=_console_global,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Parsing files for overview...", total=len(all_files) or 1)
+        for f in all_files:
+            hosts, ports, combos, had_explicit, malformed = _parse_for_overview(f)
+            malformed_total += malformed
+            if not hosts:
+                empties += 1
+            unique_hosts.update(hosts)
+            for h in hosts:
+                try:
+                    ip = ipaddress.ip_address(h)
+                    if isinstance(ip, ipaddress.IPv4Address):
+                        ipv4_set.add(h)
+                    elif isinstance(ip, ipaddress.IPv6Address):
+                        ipv6_set.add(h)
+                except Exception:
+                    pass
+            for p in ports:
+                ports_counter[p] += 1
+            sig = _normalize_combos(hosts, ports, combos, had_explicit)
+            combo_sig_counter[sig] += 1
+            progress.advance(task)
 
-    # Folder health (cyan labels)
     info(f"{cyan_label('Files:')} {total_files}  |  "
          f"{cyan_label('Reviewed:')} {reviewed_files}  |  "
          f"{cyan_label('Empty:')} {empties}  |  "
          f"{cyan_label('Malformed tokens:')} {malformed_total}")
 
-    # Host coverage
     info(f"{cyan_label('Hosts:')} unique={len(unique_hosts)}  "
          f"({cyan_label('IPv4:')} {len(ipv4_set)} | {cyan_label('IPv6:')} {len(ipv6_set)})")
     if unique_hosts:
         sample = ", ".join(list(sorted(unique_hosts))[:5])
         info(f"  {cyan_label('Example:')} {sample}{' ...' if len(unique_hosts) > 5 else ''}")
 
-    # Port landscape
     port_set = set(ports_counter.keys())
     info(f"{cyan_label('Ports:')} unique={len(port_set)}")
     if ports_counter:
@@ -655,7 +863,6 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
         tp_str = ", ".join(f"{p} ({n} files)" for p, n in top_ports)
         info(f"  {cyan_label(f'Top {top_ports_n}:')} {tp_str}")
 
-    # Duplicate/cluster insight
     multi_clusters = [c for c in combo_sig_counter.values() if c > 1]
     info(f"{cyan_label('Identical host:port groups across all files:')} {len(multi_clusters)}")
     if multi_clusters:
@@ -664,7 +871,6 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
 
 # === New: grouped host:ports printer ===
 def print_grouped_hosts_ports(path: Path):
-    """Print file contents grouped by host with all ports consolidated."""
     try:
         hosts, _ports, combos, _had_explicit = parse_file_hosts_ports_detailed(path)
         if not hosts:
@@ -680,6 +886,57 @@ def print_grouped_hosts_ports(path: Path):
     except Exception as e:
         warn(f"Error grouping hosts/ports: {e}")
 
+def _grouped_payload_text(path: Path) -> str:
+    hosts, _ports, combos, _had_explicit = parse_file_hosts_ports_detailed(path)
+    out = []
+    for h in hosts:
+        plist = sorted(combos[h], key=lambda x: int(x)) if combos[h] else []
+        out.append(f"{h}:{','.join(plist)}" if plist else h)
+    return "\n".join(out) + ("\n" if out else "")
+
+def _grouped_paged_text(path: Path) -> str:
+    body = _grouped_payload_text(path)
+    return f"Grouped view: {path.name}\n{body}"
+
+# ---------- Run tools with a Rich spinner ----------
+def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[str] = None) -> int:
+    disp = cmd if isinstance(cmd, str) else " ".join(str(x) for x in cmd)
+    if len(disp) > 120:
+        disp = disp[:117] + "..."
+
+    if isinstance(cmd, list):
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    else:
+        proc = subprocess.Popen(cmd, shell=True, executable=executable, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+
+    try:
+        with Progress(
+            SpinnerColumn(style="cyan"),
+            ProgTextColumn("[progress.description]{task.description}"),
+            TimeElapsedColumn(),
+            console=_console_global,
+            transient=True,
+        ) as progress:
+            progress.add_task(f"Running: {disp}", start=True)
+            for line in iter(proc.stdout.readline, ""):
+                print(line, end="")
+                progress.refresh()
+            proc.stdout.close()
+            proc.wait()
+            rc = proc.returncode
+    except KeyboardInterrupt:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        finally:
+            raise
+    if rc != 0:
+        raise subprocess.CalledProcessError(rc, cmd)
+    return rc
+
 # ========== Tool selection ==========
 def choose_tool():
     header("Choose a tool")
@@ -694,7 +951,7 @@ def choose_tool():
             warn("\nInterrupted — returning to file menu.")
             return None
         if ans in ("b", "back", ""):
-            return None if ans else "nmap"  # Enter defaults to nmap
+            return None if ans else "nmap"
         if ans.isdigit():
             i = int(ans)
             if i == 1: return "nmap"
@@ -748,7 +1005,6 @@ def render_placeholders(template: str, mapping: dict) -> str:
 # ============================================================
 
 def main(args):
-    # No hard require for nmap here — check per selected tool instead.
     use_sudo = root_or_sudo_available()
     if not use_sudo:
         warn("Not running as root and no 'sudo' found — some scan types (e.g., UDP) may fail.")
@@ -773,8 +1029,7 @@ def main(args):
             err("No scan directories found.")
             return
         header("Select a scan")
-        for i, sdir in enumerate(scans, 1):
-            print(f"[{i}] {sdir.name}")
+        _render_scan_table(scans)
         print(fmt_action("[X] Exit"))
         try:
             ans = input("Choose: ").strip().lower()
@@ -788,7 +1043,7 @@ def main(args):
             continue
         scan_dir = scans[int(ans)-1]
 
-        # --- show scan overview immediately after selecting scan ---
+        # Overview immediately after selecting scan
         show_scan_summary(scan_dir)
 
         # Severity loop
@@ -804,7 +1059,7 @@ def main(args):
                 return -(int(m.group(1)) if m else 0), p.name
             severities = sorted(severities, key=sev_key)
 
-            # Compute MSF virtual group (for menu counts only)
+            # Metasploit Module virtual group (menu counts)
             msf_files_for_count = []
             for sd in severities:
                 for f in list_files(sd):
@@ -818,18 +1073,8 @@ def main(args):
             )
             msf_unrev = msf_total - msf_reviewed
 
-            # Render the standard severities
-            for i, sd in enumerate(severities, 1):
-                unrev, rev, tot = _count_severity_files(sd)
-                label = pretty_severity_label(sd.name)
-                print(f"[{i}] {label} — unreviewed: {_color_unreviewed(unrev)} | reviewed: {fmt_reviewed(rev)} | total: {tot}")
-
-            # Optional Metasploit Module entry (always at the bottom)
-            extra_offset = 0
-            if has_msf:
-                extra_offset = 1
-                idx = len(severities) + 1
-                print(f"[{idx}] Metasploit Module — unreviewed: {_color_unreviewed(msf_unrev)} | reviewed: {fmt_reviewed(msf_reviewed)} | total: {msf_total}")
+            msf_summary = (len(severities) + 1, msf_unrev, msf_reviewed, msf_total) if has_msf else None
+            _render_severity_table(severities, msf_summary=msf_summary)
 
             print(fmt_action("[B] Back"))
             try:
@@ -839,7 +1084,7 @@ def main(args):
                 break
             if ans in ("b", "back"):
                 break
-            options_count = len(severities) + extra_offset
+            options_count = len(severities) + (1 if has_msf else 0)
             if not ans.isdigit() or not (1 <= int(ans) <= options_count):
                 warn("Invalid choice.")
                 continue
@@ -849,12 +1094,13 @@ def main(args):
             if choice_idx <= len(severities):
                 sev_dir = severities[choice_idx-1]
 
-                # Per-severity file review
                 file_filter = ""
                 reviewed_filter = ""
-                group_filter = None  # (group_index:int, names:set[str]) — resets whenever you enter a severity
-                sort_mode = "name"   # "name" or "hosts"
-                file_parse_cache = {}  # Path -> (host_count:int, ports_str:str) for this severity view
+                group_filter = None
+                sort_mode = "name"
+                file_parse_cache = {}
+                page_size = _default_page_size()
+                page_idx = 0
 
                 def get_counts_for(path: Path):
                     if path in file_parse_cache:
@@ -874,14 +1120,12 @@ def main(args):
                     reviewed = [f for f in files if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))]
                     unreviewed = [f for f in files if f not in reviewed]
 
-                    # Apply substring filter and (optional) group filter
                     candidates = [
                         u for u in unreviewed
                         if (file_filter.lower() in u.name.lower())
                         and (group_filter is None or u.name in group_filter[1])
                     ]
 
-                    # Sort candidates for display
                     if sort_mode == "hosts":
                         display = sorted(
                             candidates,
@@ -890,12 +1134,19 @@ def main(args):
                     else:
                         display = sorted(candidates, key=lambda p: natural_key(p.name))
 
-                    # Filtering UI (unreviewed)
+                    total_pages = max(1, math.ceil(len(display) / page_size)) if page_size > 0 else 1
+                    if page_idx >= total_pages:
+                        page_idx = total_pages - 1
+                    start = page_idx * page_size
+                    end = start + page_size
+                    page_items = display[start:end]
+
                     try:
                         status = f"Unreviewed files ({len(unreviewed)}). Current filter: '{file_filter or '*'}'"
                         if group_filter:
                             status += f" | Group filter: #{group_filter[0]} ({len(group_filter[1])})"
                         status += f" | Sort: {'Host count ↓' if sort_mode=='hosts' else 'Name A→Z'}"
+                        status += f" | Page: {page_idx+1}/{total_pages}"
                         print(status)
 
                         actions = "[F] Set filter / [C] Clear filter / [R] View reviewed files / "
@@ -904,39 +1155,63 @@ def main(args):
                         actions += "[O] Toggle sort / "
                         if group_filter:
                             actions += "[X] Clear group filter / "
-                        actions += "[B] Back / [Enter] Open first match"
+                        actions += "[N] Next page / [P] Prev page / [B] Back / [Enter] Open first match"
                         print(fmt_action(actions))
 
-                        for i, f in enumerate(display, 1):
-                            if sort_mode == "hosts":
-                                hc, _ps = get_counts_for(f)
-                                print(f"[{i}] {f.name}  — hosts: {hc}")
-                            else:
-                                print(f"[{i}] {f.name}")
+                        _render_file_list_table(page_items, sort_mode, get_counts_for, row_offset=start)
+
                         ans2 = input("Choose a file number, or action: ").strip().lower()
                     except KeyboardInterrupt:
                         warn("\nInterrupted — returning to severity menu.")
                         break
 
-                    # --- Actions ---
                     if ans2 in ("b", "back"):
                         break
+                    if ans2 == "n":
+                        if page_idx + 1 < total_pages:
+                            page_idx += 1
+                        else:
+                            warn("Already at last page.")
+                        continue
+                    if ans2 == "p":
+                        if page_idx > 0:
+                            page_idx -= 1
+                        else:
+                            warn("Already at first page.")
+                        continue
                     if ans2 == "f":
                         file_filter = input("Enter substring to filter by: ").strip()
+                        page_idx = 0
                         continue
                     if ans2 == "c":
                         file_filter = ""
+                        page_idx = 0
                         continue
                     if ans2 == "o":
                         sort_mode = "hosts" if sort_mode == "name" else "name"
                         ok(f"Sorting by {'host count (desc)' if sort_mode=='hosts' else 'name (A→Z)'}")
+                        if sort_mode == "hosts":
+                            missing = [p for p in candidates if p not in file_parse_cache]
+                            if missing:
+                                with Progress(
+                                    SpinnerColumn(style="cyan"),
+                                    ProgTextColumn("[progress.description]{task.description}"),
+                                    TimeElapsedColumn(),
+                                    console=_console_global,
+                                    transient=True,
+                                ) as progress:
+                                    task = progress.add_task("Counting hosts in files...", total=len(missing))
+                                    for p in missing:
+                                        _ = get_counts_for(p)
+                                        progress.advance(task)
+                        page_idx = 0
                         continue
                     if ans2 == "x" and group_filter:
                         group_filter = None
                         ok("Cleared group filter.")
+                        page_idx = 0
                         continue
                     if ans2 == "r":
-                        # Reviewed viewer
                         header("Reviewed files (read-only)")
                         print(f"Current filter: '{reviewed_filter or '*'}'")
                         print(fmt_action("[F] Set filter / [C] Clear filter / [B] Back"))
@@ -958,7 +1233,6 @@ def main(args):
                         warn("Read-only view; no file selection here.")
                         continue
                     if ans2 == "m":
-                        # Mark all filtered as REVIEW_COMPLETE
                         if not candidates:
                             warn("No files match the current filter.")
                             continue
@@ -967,19 +1241,27 @@ def main(args):
                             info("Canceled.")
                             continue
                         renamed = 0
-                        for f in candidates:
-                            newp = rename_review_complete(f)
-                            if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
-                                renamed += 1
-                                completed_total.append(newp.name)
+                        with Progress(
+                            SpinnerColumn(style="cyan"),
+                            ProgTextColumn("[progress.description]{task.description}"),
+                            TimeElapsedColumn(),
+                            console=_console_global,
+                            transient=True,
+                        ) as progress:
+                            task = progress.add_task("Marking files as REVIEW_COMPLETE...", total=len(candidates))
+                            for f in candidates:
+                                newp = rename_review_complete(f)
+                                if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
+                                    renamed += 1
+                                    completed_total.append(newp.name)
+                                progress.advance(task)
                         ok(f"Summary: {renamed} renamed, {len(candidates)-renamed} skipped.")
                         continue
                     if ans2 == "h":
-                        # Compare hosts/ports across filtered files
                         if not candidates:
                             warn("No files match the current filter.")
                             continue
-                        groups = compare_filtered(candidates)  # returns groups sorted by size DESC
+                        groups = compare_filtered(candidates)
                         if groups:
                             visible = min(5, len(groups))
                             opts = " | ".join(f"g{i+1}" for i in range(visible))
@@ -992,25 +1274,24 @@ def main(args):
                                 if 0 <= idx < len(groups):
                                     group_filter = (idx + 1, set(groups[idx]))
                                     ok(f"Applied group filter #{idx+1} ({len(groups[idx])} files).")
+                                    page_idx = 0
                         continue
 
-                    # Default-select top item on Enter
                     if ans2 == "":
-                        if not display:
-                            warn("No files match the current filter.")
+                        if not page_items:
+                            warn("No files match the current page/filter.")
                             continue
-                        chosen = display[0]
+                        chosen = page_items[0]
                     else:
                         if not ans2.isdigit():
                             warn("Please select a file by number, or use actions above.")
                             continue
-                        idx = int(ans2) - 1
-                        if idx < 0 or idx >= len(display):
+                        global_idx = int(ans2) - 1
+                        if global_idx < 0 or global_idx >= len(display):
                             warn("Invalid index.")
                             continue
-                        chosen = display[idx]
+                        chosen = display[global_idx]
 
-                    # Per-file workflow
                     lines = read_text_lines(chosen)
                     tokens = [ln for ln in lines if ln.strip()]
                     if not tokens:
@@ -1018,30 +1299,43 @@ def main(args):
                         skipped_total.append(chosen.name)
                         continue
 
-                    # Parse hosts/ports
                     hosts, ports_str = parse_hosts_ports(tokens)
                     header("Preview")
                     info(f"File: {chosen.name}")
+                    _pd_line = _plugin_details_line(chosen)
+                    if _pd_line:
+                        info(_pd_line)
                     info(f"Hosts parsed: {len(hosts)}")
                     if hosts:
                         info(f"Example host: {hosts[0]}")
                     if ports_str:
                         info(f"Ports detected: {ports_str}")
 
-                    # Offer to view file (Raw / Grouped / None)
                     try:
-                        view_choice = input("\nView file? [R]aw / [G]rouped / [N]one (default=N): ").strip().lower()
+                        view_choice = input("\nView file? [R]aw / [G]rouped / [C] Copy / [N]one (default=N): ").strip().lower()
                     except KeyboardInterrupt:
                         continue
                     if view_choice in ("r", "raw"):
-                        safe_print_file(chosen)
+                        text = _file_raw_paged_text(chosen)
+                        menu_pager(text)
                     elif view_choice in ("g", "grouped"):
-                        print_grouped_hosts_ports(chosen)
+                        text = _grouped_paged_text(chosen)
+                        menu_pager(text)
+                    elif view_choice in ("c", "copy"):
+                        sub = input("Copy [R]aw or [G]rouped? (default=G): ").strip().lower()
+                        if sub in ("", "g", "grouped"):
+                            payload = _grouped_payload_text(chosen)
+                        else:
+                            payload = _file_raw_payload_text(chosen)
+                        ok_flag, detail = copy_to_clipboard(payload)
+                        if ok_flag:
+                            ok("Copied to clipboard.")
+                        else:
+                            warn(f"{detail} Printing below for manual copy:")
+                            print(payload)
 
-                    # Track if we already asked about marking, to avoid double prompt
                     completion_decided = False
 
-                    # ============ NO-TOOLS MODE SHORT-CIRCUIT ============
                     if args.no_tools:
                         info("(no-tools mode active — skipping tool selection)")
                         try:
@@ -1054,9 +1348,7 @@ def main(args):
                         except KeyboardInterrupt:
                             continue
                         continue
-                    # =====================================================
 
-                    # Run a tool?
                     try:
                         do_scan = yesno("\nRun a tool now?", default="n")
                     except KeyboardInterrupt:
@@ -1072,9 +1364,8 @@ def main(args):
                             completion_decided = True
                         except KeyboardInterrupt:
                             continue
-                        continue  # back to file list (skip tool loop and final prompt entirely)
+                        continue
 
-                    # --- Prepare per-file context ONCE (persists across multiple commands) ---
                     sample_hosts = hosts
                     if len(hosts) > 5:
                         try:
@@ -1096,24 +1387,30 @@ def main(args):
                                 ok(f"Sampling {k} host(s).")
                                 break
 
-                    workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
-                    tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
+                    with Progress(
+                        SpinnerColumn(style="cyan"),
+                        ProgTextColumn("[progress.description]{task.description}"),
+                        TimeElapsedColumn(),
+                        console=_console_global,
+                        transient=True,
+                    ) as progress:
+                        progress.add_task("Preparing workspace...", start=True)
+                        workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
+                        tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
 
                     out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir.name) / Path(chosen.name).stem
                     out_dir_static.mkdir(parents=True, exist_ok=True)
 
-                    # ----- Tool loop: allow running multiple commands in the same context -----
                     tool_used = False
                     while True:
                         tool_choice = choose_tool()
                         if tool_choice is None:
-                            break  # back to file menu
+                            break
 
-                        # Fresh timestamped oabase per run
                         _tmp_dir, oabase = build_results_paths(scan_dir, sev_dir, chosen.name)
-                        results_dir = out_dir_static  # for clearer prints
+                        results_dir = out_dir_static
 
-                        nxc_relay_path = None  # reset per run
+                        nxc_relay_path = None
 
                         if tool_choice == "nmap":
                             try:
@@ -1187,14 +1484,13 @@ def main(args):
                                 continue
                             rendered = render_placeholders(template, mapping)
                             display_cmd = rendered
-                            cmd = rendered  # string
+                            cmd = rendered
                             artifact_note = f"OABASE path:   {oabase}"
 
                         else:
                             warn("Unknown tool selection.")
                             continue
 
-                        # Command review
                         action = command_review_menu(display_cmd)
 
                         if action == "copy":
@@ -1208,10 +1504,10 @@ def main(args):
                             try:
                                 tool_used = True
                                 if isinstance(cmd, list):
-                                    subprocess.run(cmd, check=True)
+                                    run_command_with_progress(cmd, shell=False)
                                 else:
                                     shell_exec = shutil.which("bash") or shutil.which("sh")
-                                    subprocess.run(cmd, shell=True, check=True, executable=shell_exec)
+                                    run_command_with_progress(cmd, shell=True, executable=shell_exec)
                             except KeyboardInterrupt:
                                 warn("\nRun interrupted — returning to tool menu.")
                                 continue
@@ -1223,7 +1519,6 @@ def main(args):
                             info("Canceled. Returning to tool menu.")
                             continue
 
-                        # Artifacts for this run
                         header("Artifacts")
                         info(f"Workspace:     {workdir}")
                         info(f" - Hosts:      {workdir / 'tcp_ips.list'}")
@@ -1239,31 +1534,29 @@ def main(args):
                         except KeyboardInterrupt:
                             break
                         if not again:
-                            break  # exit tool loop
+                            break
 
-                    # After leaving tool loop, optional rename (once)
                     if not completion_decided:
                         try:
                             if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
                                 newp = rename_review_complete(chosen)
                                 completed_total.append(newp.name if newp != chosen else chosen.name)
                             else:
-                                # If they ran tools but chose not to rename, still count as reviewed
                                 reviewed_total.append(chosen.name)
                             completion_decided = True
                         except KeyboardInterrupt:
                             continue
 
-                # end while True (per-severity)
                 continue  # back to severity menu
 
-            # === Metasploit Module (virtual severity) selected ===
-            # NOTE: we will re-scan msf files each loop iteration to reflect renames immediately.
+            # === Metasploit Module (virtual) ===
             file_filter = ""
             reviewed_filter = ""
             group_filter = None
             sort_mode = "name"
             file_parse_cache = {}
+            page_size = _default_page_size()
+            page_idx = 0
 
             def get_counts_for_msf(path: Path):
                 if path in file_parse_cache:
@@ -1278,7 +1571,6 @@ def main(args):
                 return stats
 
             while True:
-                # RE-SCAN msf files every draw so renames are reflected instantly
                 msf_files = []
                 for sd in severities:
                     for f in list_files(sd):
@@ -1291,14 +1583,12 @@ def main(args):
                 reviewed_all = [f for f in files_all if f.name.lower().startswith(("review_complete", "review-complete", "review_complete-", "review-complete-"))]
                 unreviewed_all = [f for f in files_all if f not in reviewed_all]
 
-                # Apply filter and optional group filter
                 candidates = [
                     u for u in unreviewed_all
                     if (file_filter.lower() in u.name.lower())
                     and (group_filter is None or u.name in group_filter[1])
                 ]
 
-                # Sort
                 if sort_mode == "hosts":
                     display = sorted(
                         candidates,
@@ -1307,11 +1597,19 @@ def main(args):
                 else:
                     display = sorted(candidates, key=lambda p: natural_key(p.name))
 
+                total_pages = max(1, math.ceil(len(display) / page_size)) if page_size > 0 else 1
+                if page_idx >= total_pages:
+                    page_idx = total_pages - 1
+                start = page_idx * page_size
+                end = start + page_size
+                page_items = display[start:end]
+
                 try:
                     status = f"Unreviewed files ({len(unreviewed_all)}). Current filter: '{file_filter or '*'}'"
                     if group_filter:
                         status += f" | Group filter: #{group_filter[0]} ({len(group_filter[1])})"
                     status += f" | Sort: {'Host count ↓' if sort_mode=='hosts' else 'Name A→Z'}"
+                    status += f" | Page: {page_idx+1}/{total_pages}"
                     print(status)
 
                     actions = "[F] Set filter / [C] Clear filter / [R] View reviewed files / "
@@ -1320,17 +1618,11 @@ def main(args):
                     actions += "[O] Toggle sort / "
                     if group_filter:
                         actions += "[X] Clear group filter / "
-                    actions += "[B] Back / [Enter] Open first match"
+                    actions += "[N] Next page / [P] Prev page / [B] Back / [Enter] Open first match"
                     print(fmt_action(actions))
 
-                    for i, f in enumerate(display, 1):
-                        sev_label = pretty_severity_label(sev_map[f].name)
-                        sev_col = colorize_severity_label(sev_label)
-                        if sort_mode == "hosts":
-                            hc, _ps = get_counts_for_msf(f)
-                            print(f"[{i}] {f.name}  — {sev_col}  — hosts: {hc}")
-                        else:
-                            print(f"[{i}] {f.name}  — {sev_col}")
+                    _render_file_list_table(page_items, sort_mode, get_counts_for_msf, row_offset=start)
+
                     ans3 = input("Choose a file number, or action: ").strip().lower()
                 except KeyboardInterrupt:
                     warn("\nInterrupted — returning to severity menu.")
@@ -1338,19 +1630,49 @@ def main(args):
 
                 if ans3 in ("b", "back"):
                     break
+                if ans3 == "n":
+                    if page_idx + 1 < total_pages:
+                        page_idx += 1
+                    else:
+                        warn("Already at last page.")
+                    continue
+                if ans3 == "p":
+                    if page_idx > 0:
+                        page_idx -= 1
+                    else:
+                        warn("Already at first page.")
+                    continue
                 if ans3 == "f":
                     file_filter = input("Enter substring to filter by: ").strip()
+                    page_idx = 0
                     continue
                 if ans3 == "c":
                     file_filter = ""
+                    page_idx = 0
                     continue
                 if ans3 == "o":
                     sort_mode = "hosts" if sort_mode == "name" else "name"
                     ok(f"Sorting by {'host count (desc)' if sort_mode=='hosts' else 'name (A→Z)'}")
+                    if sort_mode == "hosts":
+                        missing = [p for p in candidates if p not in file_parse_cache]
+                        if missing:
+                            with Progress(
+                                SpinnerColumn(style="cyan"),
+                                ProgTextColumn("[progress.description]{task.description}"),
+                                TimeElapsedColumn(),
+                                console=_console_global,
+                                transient=True,
+                            ) as progress:
+                                task = progress.add_task("Counting hosts in files...", total=len(missing))
+                                for p in missing:
+                                    _ = get_counts_for_msf(p)
+                                    progress.advance(task)
+                    page_idx = 0
                     continue
                 if ans3 == "x" and group_filter:
                     group_filter = None
                     ok("Cleared group filter.")
+                    page_idx = 0
                     continue
                 if ans3 == "r":
                     header("Reviewed files (read-only)")
@@ -1384,11 +1706,20 @@ def main(args):
                         info("Canceled.")
                         continue
                     renamed = 0
-                    for f in candidates:
-                        newp = rename_review_complete(f)
-                        if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
-                            renamed += 1
-                            completed_total.append(newp.name)
+                    with Progress(
+                        SpinnerColumn(style="cyan"),
+                        ProgTextColumn("[progress.description]{task.description}"),
+                        TimeElapsedColumn(),
+                        console=_console_global,
+                        transient=True,
+                    ) as progress:
+                        task = progress.add_task("Marking files as REVIEW_COMPLETE...", total=len(candidates))
+                        for f in candidates:
+                            newp = rename_review_complete(f)
+                            if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
+                                renamed += 1
+                                completed_total.append(newp.name)
+                            progress.advance(task)
                     ok(f"Summary: {renamed} renamed, {len(candidates)-renamed} skipped.")
                     continue
                 if ans3 == "h":
@@ -1408,25 +1739,24 @@ def main(args):
                             if 0 <= idx < len(groups):
                                 group_filter = (idx + 1, set(groups[idx]))
                                 ok(f"Applied group filter #{idx+1} ({len(groups[idx])} files).")
+                                page_idx = 0
                     continue
 
-                # Default-select top item on Enter
                 if ans3 == "":
-                    if not display:
-                        warn("No files match the current filter.")
+                    if not page_items:
+                        warn("No files match the current page/filter.")
                         continue
-                    chosen = display[0]
+                    chosen = page_items[0]
                 else:
                     if not ans3.isdigit():
                         warn("Please select a file by number, or use actions above.")
                         continue
-                    idx = int(ans3) - 1
-                    if idx < 0 or idx >= len(display):
+                    global_idx = int(ans3) - 1
+                    if global_idx < 0 or global_idx >= len(display):
                         warn("Invalid index.")
                         continue
-                    chosen = display[idx]
+                    chosen = display[global_idx]
 
-                # --- Per-file workflow (with the file's native severity used for artifacts) ---
                 sev_dir_for_file = sev_map[chosen]
 
                 lines = read_text_lines(chosen)
@@ -1439,21 +1769,37 @@ def main(args):
                 hosts, ports_str = parse_hosts_ports(tokens)
                 header("Preview")
                 info(f"File: {chosen.name}  — {pretty_severity_label(sev_dir_for_file.name)}")
+                _pd_line = _plugin_details_line(chosen)
+                if _pd_line:
+                    info(_pd_line)
                 info(f"Hosts parsed: {len(hosts)}")
                 if hosts:
                     info(f"Example host: {hosts[0]}")
                 if ports_str:
                     info(f"Ports detected: {ports_str}")
 
-                # Offer to view file (Raw / Grouped / None)
                 try:
-                    view_choice = input("\nView file? [R]aw / [G]rouped / [N]one (default=N): ").strip().lower()
+                    view_choice = input("\nView file? [R]aw / [G]rouped / [C] Copy / [N]one (default=N): ").strip().lower()
                 except KeyboardInterrupt:
                     continue
                 if view_choice in ("r", "raw"):
-                    safe_print_file(chosen)
+                    text = _file_raw_paged_text(chosen)
+                    menu_pager(text)
                 elif view_choice in ("g", "grouped"):
-                    print_grouped_hosts_ports(chosen)
+                    text = _grouped_paged_text(chosen)
+                    menu_pager(text)
+                elif view_choice in ("c", "copy"):
+                    sub = input("Copy [R]aw or [G]rouped? (default=G): ").strip().lower()
+                    if sub in ("", "g", "grouped"):
+                        payload = _grouped_payload_text(chosen)
+                    else:
+                        payload = _file_raw_payload_text(chosen)
+                    ok_flag, detail = copy_to_clipboard(payload)
+                    if ok_flag:
+                        ok("Copied to clipboard.")
+                    else:
+                        warn(f"{detail} Printing below for manual copy:")
+                        print(payload)
 
                 completion_decided = False
 
@@ -1508,8 +1854,16 @@ def main(args):
                             ok(f"Sampling {k} host(s).")
                             break
 
-                workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
-                tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
+                with Progress(
+                    SpinnerColumn(style="cyan"),
+                    ProgTextColumn("[progress.description]{task.description}"),
+                    TimeElapsedColumn(),
+                    console=_console_global,
+                    transient=True,
+                ) as progress:
+                    progress.add_task("Preparing workspace...", start=True)
+                    workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
+                    tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
 
                 out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir_for_file.name) / Path(chosen.name).stem
                 out_dir_static.mkdir(parents=True, exist_ok=True)
@@ -1617,10 +1971,10 @@ def main(args):
                         try:
                             tool_used = True
                             if isinstance(cmd, list):
-                                subprocess.run(cmd, check=True)
+                                run_command_with_progress(cmd, shell=False)
                             else:
                                 shell_exec = shutil.which("bash") or shutil.which("sh")
-                                subprocess.run(cmd, shell=True, check=True, executable=shell_exec)
+                                run_command_with_progress(cmd, shell=True, executable=shell_exec)
                         except KeyboardInterrupt:
                             warn("\nRun interrupted — returning to tool menu.")
                             continue
@@ -1649,7 +2003,6 @@ def main(args):
                     if not again:
                         break
 
-                # After leaving tool loop, optional rename (once)
                 if not completion_decided:
                     try:
                         if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
@@ -1661,9 +2014,6 @@ def main(args):
                     except KeyboardInterrupt:
                         continue
 
-            # end of Metasploit Module view
-
-    # Session summary
     header("Session Summary")
     info(f"Reviewed (not renamed): {len(reviewed_total)}")
     if reviewed_total:
@@ -1679,14 +2029,64 @@ def main(args):
             print(f" - {n}")
     ok("Done.")
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Review Nessus plugin host files and optionally run tools.")
-    parser.add_argument("export_root", nargs="?", default="./nessus_plugin_hosts",
-                        help="Root directory containing scan folders (default: ./nessus_plugin_hosts)")
-    parser.add_argument("--no-tools", action="store_true",
-                        help="Disable all tool prompts and execution for this session.")
-    args = parser.parse_args()
+# ------------------------------
+# Typer CLI (required)
+# ------------------------------
+app = typer.Typer(no_args_is_help=True, add_completion=False, help="mundane — faster review & tooling runner")
+_console = _console_global
+
+@app.callback()
+def _root():
+    """Modern CLI for mundane."""
+    return
+
+@app.command(help="Interactive review (calls the existing flow).")
+def review(
+    export_root: Path = typer.Option(Path("./nessus_plugin_hosts"), "--export-root", "-r", help="Scan exports root."),
+    no_tools: bool = typer.Option(False, "--no-tools", help="Disable tool prompts (review-only)."),
+):
+    args = types.SimpleNamespace(export_root=str(export_root), no_tools=no_tools)
     try:
         main(args)
     except KeyboardInterrupt:
         warn("\nInterrupted — goodbye.")
+
+@app.command(help="Preview a plugin file (raw or grouped).")
+def view(
+    file: Path = typer.Argument(..., exists=True, readable=True),
+    grouped: bool = typer.Option(False, "--grouped", "-g", help="Show host:port,port,..."),
+):
+    if grouped:
+        print_grouped_hosts_ports(file)
+    else:
+        safe_print_file(file)
+
+@app.command(help="Compare plugin files and group identical host:port combos.")
+def compare(
+    paths: list[str] = typer.Argument(..., help="Files/dirs/globs to compare (e.g., '4_Critical/*.txt').")
+):
+    out: list[Path] = []
+    for p in paths:
+        pp = Path(p)
+        if pp.is_dir():
+            out.extend([f for f in pp.rglob("*.txt")])
+        else:
+            if any(ch in p for ch in ["*", "?", "["]):
+                out.extend([Path(x) for x in map(str, Path().glob(p)) if str(x).endswith(".txt")])
+            else:
+                out.append(pp)
+    files = [f for f in out if f.exists()]
+    if not files:
+        err("No plugin files found for comparison.")
+        raise typer.Exit(1)
+    _ = compare_filtered(files)
+
+@app.command(help="Show a scan summary for a scan directory.")
+def summary(
+    scan_dir: Path = typer.Argument(..., exists=True, dir_okay=True, file_okay=False),
+    top_ports: int = typer.Option(5, "--top-ports", "-n", min=1, help="How many top ports to show."),
+):
+    show_scan_summary(scan_dir, top_ports_n=top_ports)
+
+if __name__ == "__main__":
+    app()
