@@ -319,7 +319,7 @@ def build_netexec_cmd(exec_bin: str, protocol: str, ips_file: Path, oabase: Path
     """
     NetExec command builder.
     - Passes the targets file as a positional argument (no -iL).
-    - Always logs to {oabase}.nxc.<protocol>.log
+    - Always logs to {oabase}.nxc.{protocol}.log
     - SMB adds --gen-relay-list and --shares, writing the relay list into the artifacts area.
     Returns: (cmd_list, log_path, relay_path_or_None)
     """
@@ -336,6 +336,25 @@ def build_netexec_cmd(exec_bin: str, protocol: str, ips_file: Path, oabase: Path
     else:
         cmd = [exec_bin, protocol, str(ips_file), "--log", log_path]
     return cmd, log_path, relay_path
+
+# ---------- Plugin details link helpers ----------
+PLUGIN_DETAILS_BASE = "https://www.tenable.com/plugins/nessus/"
+
+def _plugin_id_from_filename(name_or_path: Any) -> Optional[str]:
+    """Extract leading numeric plugin ID (handles REVIEW_COMPLETE- prefix)."""
+    name = name_or_path.name if isinstance(name_or_path, Path) else str(name_or_path)
+    # Strip REVIEW_COMPLETE- or review-complete- prefix if present
+    lower = name.lower()
+    if lower.startswith(("review_complete", "review-complete")) and "-" in name:
+        name = name.split("-", 1)[1]
+    m = re.match(r"^(\d+)", name)
+    return m.group(1) if m else None
+
+def _plugin_details_line(path: Path) -> Optional[str]:
+    pid = _plugin_id_from_filename(path)
+    if pid:
+        return f"Plugin Details: {PLUGIN_DETAILS_BASE}{pid}"
+    return None
 
 def copy_to_clipboard(s: str) -> tuple:
     """Best-effort cross-platform clipboard.
@@ -1517,6 +1536,10 @@ def main(args):
                     hosts, ports_str = parse_hosts_ports(tokens)
                     header("Preview")
                     info(f"File: {chosen.name}")
+                    # NEW: plugin details link (if we can extract the ID)
+                    _pd_line = _plugin_details_line(chosen)
+                    if _pd_line:
+                        info(_pd_line)
                     info(f"Hosts parsed: {len(hosts)}")
                     if hosts:
                         info(f"Example host: {hosts[0]}")
@@ -2014,6 +2037,10 @@ def main(args):
                 hosts, ports_str = parse_hosts_ports(tokens)
                 header("Preview")
                 info(f"File: {chosen.name}  — {pretty_severity_label(sev_dir_for_file.name)}")
+                # NEW: plugin details link
+                _pd_line = _plugin_details_line(chosen)
+                if _pd_line:
+                    info(_pd_line)
                 info(f"Hosts parsed: {len(hosts)}")
                 if hosts:
                     info(f"Example host: {hosts[0]}")
