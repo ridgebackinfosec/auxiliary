@@ -11,6 +11,7 @@ from typing import Any, Optional
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
 from rich.traceback import install as rich_tb_install
 from rich import box
 from rich.text import Text
@@ -950,6 +951,45 @@ def clone_nessus_plugin_hosts(repo_url: str, dest: Path) -> Path:
     ok(f"Cloned into {dest}")
     return dest
 
+# ========== Action help panel ==========
+def _key_text(key: str, label: str, *, enabled: bool = True) -> Text:
+    t = Text(f"[{key}] {label}")
+    t.stylize("cyan")
+    if not enabled:
+        t.stylize("dim")
+    return t
+
+def show_actions_help(*, group_applied: bool, candidates_count: int, sort_mode: str, can_next: bool, can_prev: bool):
+    """Render a categorized help panel for main/MSF file lists."""
+    t = Table.grid(padding=(0,1))
+    t.add_row(Text("Navigation", style="bold"), _key_text("Enter", "Open first match"), _key_text("N", "Next page", enabled=can_next), _key_text("P", "Prev page", enabled=can_prev), _key_text("B", "Back"))
+    t.add_row(Text("Filtering", style="bold"), _key_text("F", "Set filter"), _key_text("C", "Clear filter"))
+    t.add_row(Text("Sorting", style="bold"), _key_text("O", f"Toggle sort (now: {'Hosts' if sort_mode=='hosts' else 'Name'})"))
+    t.add_row(Text("Bulk review", style="bold"), _key_text("M", f"Mark ALL filtered as REVIEW_COMPLETE ({candidates_count})"))
+    t.add_row(Text("Analysis", style="bold"), _key_text("H", "Compare hosts/ports in filtered files"))
+    if group_applied:
+        t.add_row(Text("Groups", style="bold"), _key_text("X", "Clear group filter"))
+    panel = Panel(t, title="Actions", border_style="cyan")
+    _console_global.print(panel)
+
+def show_reviewed_help():
+    t = Table.grid(padding=(0,1))
+    t.add_row(Text("Filtering", style="bold"), _key_text("F", "Set filter"), _key_text("C", "Clear filter"))
+    t.add_row(Text("Exit", style="bold"), _key_text("B", "Back"))
+    panel = Panel(t, title="Reviewed Files — Actions", border_style="cyan")
+    _console_global.print(panel)
+
+def footer_line(*, group_applied: bool, candidates_count: int, can_next: bool, can_prev: bool) -> str:
+    right = []
+    if can_next: right.append("[N] Next")
+    if can_prev: right.append("[P] Prev")
+    if group_applied: right.append("[X] Clear group")
+    nav = "  ".join(right) if right else ""
+    main = "[?] Help  [Enter] Open  [B] Back  |  [F] Filter  [C] Clear  [O] Sort  [R] Reviewed  [H] Compare  [M] Mark all ({})".format(candidates_count)
+    if nav:
+        main = main + "  |  " + nav
+    return main
+
 # ========== Tool selection ==========
 def choose_tool():
     header("Choose a tool")
@@ -1162,21 +1202,34 @@ def main(args):
                         status += f" | Page: {page_idx+1}/{total_pages}"
                         print(status)
 
-                        actions = "[F] Set filter / [C] Clear filter / [R] View reviewed files / "
-                        actions += f"[M] Mark ALL filtered as REVIEW_COMPLETE ({len(candidates)}) / "
-                        actions += "[H] Compare hosts/ports in filtered files / "
-                        actions += "[O] Toggle sort / "
-                        if group_filter:
-                            actions += "[X] Clear group filter / "
-                        actions += "[N] Next page / [P] Prev page / [B] Back / [Enter] Open first match"
-                        print(fmt_action(actions))
-
+                        # Render the table first (list of files)
                         _render_file_list_table(page_items, sort_mode, get_counts_for, row_offset=start)
+
+                        # Minimal footer + '?'
+                        can_next = page_idx + 1 < total_pages
+                        can_prev = page_idx > 0
+                        footer = footer_line(
+                            group_applied=bool(group_filter),
+                            candidates_count=len(candidates),
+                            can_next=can_next,
+                            can_prev=can_prev,
+                        )
+                        print(fmt_action(footer))
 
                         ans2 = input("Choose a file number, or action: ").strip().lower()
                     except KeyboardInterrupt:
                         warn("\nInterrupted — returning to severity menu.")
                         break
+
+                    if ans2 in ("?", "help"):
+                        show_actions_help(
+                            group_applied=bool(group_filter),
+                            candidates_count=len(candidates),
+                            sort_mode=sort_mode,
+                            can_next=(page_idx + 1 < total_pages),
+                            can_prev=(page_idx > 0),
+                        )
+                        continue
 
                     if ans2 in ("b", "back"):
                         break
@@ -1227,13 +1280,17 @@ def main(args):
                     if ans2 == "r":
                         header("Reviewed files (read-only)")
                         print(f"Current filter: '{reviewed_filter or '*'}'")
-                        print(fmt_action("[F] Set filter / [C] Clear filter / [B] Back"))
                         for i, f in enumerate([r for r in reviewed if (reviewed_filter.lower() in r.name.lower())], 1):
                             print(f"[{i}] {fmt_reviewed(f.name)}")
+                        # actions footer under the list
+                        print(fmt_action("[?] Help  [F] Set filter  [C] Clear filter  [B] Back"))
                         try:
                             choice = input("Action or [B]ack: ").strip().lower()
                         except KeyboardInterrupt:
                             warn("\nInterrupted — returning.")
+                            continue
+                        if choice in ("?", "help"):
+                            show_reviewed_help()
                             continue
                         if choice == "f":
                             reviewed_filter = input("Enter substring to filter by: ").strip()
@@ -1625,21 +1682,34 @@ def main(args):
                     status += f" | Page: {page_idx+1}/{total_pages}"
                     print(status)
 
-                    actions = "[F] Set filter / [C] Clear filter / [R] View reviewed files / "
-                    actions += f"[M] Mark ALL filtered as REVIEW_COMPLETE ({len(candidates)}) / "
-                    actions += "[H] Compare hosts/ports in filtered files / "
-                    actions += "[O] Toggle sort / "
-                    if group_filter:
-                        actions += "[X] Clear group filter / "
-                    actions += "[N] Next page / [P] Prev page / [B] Back / [Enter] Open first match"
-                    print(fmt_action(actions))
-
+                    # File list first
                     _render_file_list_table(page_items, sort_mode, get_counts_for_msf, row_offset=start)
+
+                    # Footer
+                    can_next = page_idx + 1 < total_pages
+                    can_prev = page_idx > 0
+                    footer = footer_line(
+                        group_applied=bool(group_filter),
+                        candidates_count=len(candidates),
+                        can_next=can_next,
+                        can_prev=can_prev,
+                    )
+                    print(fmt_action(footer))
 
                     ans3 = input("Choose a file number, or action: ").strip().lower()
                 except KeyboardInterrupt:
                     warn("\nInterrupted — returning to severity menu.")
                     break
+
+                if ans3 in ("?", "help"):
+                    show_actions_help(
+                        group_applied=bool(group_filter),
+                        candidates_count=len(candidates),
+                        sort_mode=sort_mode,
+                        can_next=(page_idx + 1 < total_pages),
+                        can_prev=(page_idx > 0),
+                    )
+                    continue
 
                 if ans3 in ("b", "back"):
                     break
@@ -1690,15 +1760,19 @@ def main(args):
                 if ans3 == "r":
                     header("Reviewed files (read-only)")
                     print(f"Current filter: '{reviewed_filter or '*'}'")
-                    print(fmt_action("[F] Set filter / [C] Clear filter / [B] Back"))
                     for i, f in enumerate([r for r in reviewed_all if (reviewed_filter.lower() in r.name.lower())], 1):
                         sev_label = pretty_severity_label(sev_map[f].name)
                         sev_col = colorize_severity_label(sev_label)
                         print(f"[{i}] {fmt_reviewed(f.name)}  — {sev_col}")
+                    # footer below the list
+                    print(fmt_action("[?] Help  [F] Set filter  [C] Clear filter  [B] Back"))
                     try:
                         choice = input("Action or [B]ack: ").strip().lower()
                     except KeyboardInterrupt:
                         warn("\nInterrupted — returning.")
+                        continue
+                    if choice in ("?", "help"):
+                        show_reviewed_help()
                         continue
                     if choice == "f":
                         reviewed_filter = input("Enter substring to filter by: ").strip()
@@ -1758,8 +1832,8 @@ def main(args):
                 if ans3 == "":
                     if not page_items:
                         warn("No files match the current page/filter.")
-                        continue
-                    chosen = page_items[0]
+                    else:
+                        chosen = page_items[0]
                 else:
                     if not ans3.isdigit():
                         warn("Please select a file by number, or use actions above.")
