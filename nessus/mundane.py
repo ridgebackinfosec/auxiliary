@@ -951,18 +951,61 @@ def clone_nessus_plugin_hosts(repo_url: str, dest: Path) -> Path:
     ok(f"Cloned into {dest}")
     return dest
 
-# ========== Action help panel ==========
+# ========== Action help & footer ==========
+
 def _key_text(key: str, label: str, *, enabled: bool = True) -> Text:
-    t = Text(f"[{key}] {label}")
-    t.stylize("cyan")
+    t = Text()
+    t.append(f"[{key}] ", style="cyan")
+    t.append(label, style=None if enabled else "dim")
     if not enabled:
         t.stylize("dim")
     return t
 
+def _join_actions_texts(items: list[Text]) -> Text:
+    out = Text()
+    for i, it in enumerate(items):
+        if i:
+            out.append(" / ", style="dim")
+        out.append(it)
+    return out
+
+def render_actions_footer(*, group_applied: bool, candidates_count: int, sort_mode: str, can_next: bool, can_prev: bool):
+    """Two-row, two-column action footer."""
+    left_row1  = _join_actions_texts([
+        _key_text("Enter", "Open first match"),
+        _key_text("B", "Back"),
+        _key_text("?", "Help"),
+    ])
+    right_row1 = _join_actions_texts([
+        _key_text("F", "Set filter"),
+        _key_text("C", "Clear filter"),
+        _key_text("O", f"Toggle sort (now: {'Hosts' if sort_mode=='hosts' else 'Name'})"),
+    ])
+    left_row2  = _join_actions_texts([
+        _key_text("R", "Reviewed files"),
+        _key_text("H", "Compare"),
+        _key_text("M", f"Mark ALL filtered as REVIEW_COMPLETE ({candidates_count})"),
+    ])
+    right_items = [
+        _key_text("N", "Next page", enabled=can_next),
+        _key_text("P", "Prev page", enabled=can_prev),
+    ]
+    if group_applied:
+        right_items.append(_key_text("X", "Clear group"))
+    right_row2 = _join_actions_texts(right_items)
+
+    grid = Table.grid(expand=True, padding=(0, 1))
+    grid.add_column(ratio=1)
+    grid.add_column(ratio=1)
+    grid.add_row(left_row1, right_row1)
+    grid.add_row(left_row2, right_row2)
+    _console_global.print(grid)
+
 def show_actions_help(*, group_applied: bool, candidates_count: int, sort_mode: str, can_next: bool, can_prev: bool):
     """Render a categorized help panel for main/MSF file lists."""
     t = Table.grid(padding=(0,1))
-    t.add_row(Text("Navigation", style="bold"), _key_text("Enter", "Open first match"), _key_text("N", "Next page", enabled=can_next), _key_text("P", "Prev page", enabled=can_prev), _key_text("B", "Back"))
+    t.add_row(Text("Navigation", style="bold"), _key_text("Enter", "Open first match"),
+              _key_text("N", "Next page", enabled=can_next), _key_text("P", "Prev page", enabled=can_prev), _key_text("B", "Back"))
     t.add_row(Text("Filtering", style="bold"), _key_text("F", "Set filter"), _key_text("C", "Clear filter"))
     t.add_row(Text("Sorting", style="bold"), _key_text("O", f"Toggle sort (now: {'Hosts' if sort_mode=='hosts' else 'Name'})"))
     t.add_row(Text("Bulk review", style="bold"), _key_text("M", f"Mark ALL filtered as REVIEW_COMPLETE ({candidates_count})"))
@@ -979,13 +1022,14 @@ def show_reviewed_help():
     panel = Panel(t, title="Reviewed Files — Actions", border_style="cyan")
     _console_global.print(panel)
 
+# (legacy single-line builder left here unused for reference)
 def footer_line(*, group_applied: bool, candidates_count: int, can_next: bool, can_prev: bool) -> str:
     right = []
-    if can_next: right.append("[N] Next")
-    if can_prev: right.append("[P] Prev")
+    if can_next: right.append("[N] Next Page")
+    if can_prev: right.append("[P] Prev Page")
     if group_applied: right.append("[X] Clear group")
     nav = "  ".join(right) if right else ""
-    main = "[?] Help  [Enter] Open  [B] Back  |  [F] Filter  [C] Clear  [O] Sort  [R] Reviewed  [H] Compare  [M] Mark all ({})".format(candidates_count)
+    main = "[?] Help  [Enter] Open 1st File  [B] Back  |  [F] Filter  [C] Clear Filter  [O] Sort  [R] Reviewed List  [H] Compare  [M] Mark all reviewed ({})".format(candidates_count)
     if nav:
         main = main + "  |  " + nav
     return main
@@ -1205,16 +1249,16 @@ def main(args):
                         # Render the table first (list of files)
                         _render_file_list_table(page_items, sort_mode, get_counts_for, row_offset=start)
 
-                        # Minimal footer + '?'
+                        # Render the new two-row footer
                         can_next = page_idx + 1 < total_pages
                         can_prev = page_idx > 0
-                        footer = footer_line(
+                        render_actions_footer(
                             group_applied=bool(group_filter),
                             candidates_count=len(candidates),
+                            sort_mode=sort_mode,
                             can_next=can_next,
                             can_prev=can_prev,
                         )
-                        print(fmt_action(footer))
 
                         ans2 = input("Choose a file number, or action: ").strip().lower()
                     except KeyboardInterrupt:
@@ -1685,16 +1729,16 @@ def main(args):
                     # File list first
                     _render_file_list_table(page_items, sort_mode, get_counts_for_msf, row_offset=start)
 
-                    # Footer
+                    # New two-row footer
                     can_next = page_idx + 1 < total_pages
                     can_prev = page_idx > 0
-                    footer = footer_line(
+                    render_actions_footer(
                         group_applied=bool(group_filter),
                         candidates_count=len(candidates),
+                        sort_mode=sort_mode,
                         can_next=can_next,
                         can_prev=can_prev,
                     )
-                    print(fmt_action(footer))
 
                     ans3 = input("Choose a file number, or action: ").strip().lower()
                 except KeyboardInterrupt:
