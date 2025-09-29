@@ -24,6 +24,10 @@ _console_global = Console()
 # Install pretty tracebacks (no try/except; fail loudly if Rich is absent)
 rich_tb_install(show_locals=False)
 
+# ========== Centralized constants ==========
+RESULTS_ROOT: Path = Path(os.environ.get("NPH_RESULTS_ROOT", "scan_artifacts"))
+REVIEW_PREFIX: str = "REVIEW_COMPLETE-"
+
 # ========== Colors & helpers ==========
 NO_COLOR = (os.environ.get("NO_COLOR") is not None) or (os.environ.get("TERM") == "dumb")
 class C:
@@ -445,10 +449,14 @@ def choose_from_list(items, title: str, allow_back=False, allow_exit=False):
                 return items[i-1]
         warn("Invalid choice.")
 
+def is_review_complete(path: Path) -> bool:
+    return path.name.startswith(REVIEW_PREFIX)
+
+
 def rename_review_complete(path: Path):
     name = path.name
-    prefix = "REVIEW_COMPLETE-"
-    if name.lower().startswith(("review_complete", "review-complete")):
+    prefix = REVIEW_PREFIX
+    if is_review_complete(path):
         warn("Already marked as review complete.")
         return path
     new = path.with_name(prefix + name)
@@ -496,7 +504,7 @@ def choose_nse_profile():
 def build_results_paths(scan_dir: Path, sev_dir: Path, plugin_filename: str):
     stem = Path(plugin_filename).stem
     sev_label = pretty_severity_label(sev_dir.name)
-    out_dir = Path("scan_artifacts") / scan_dir.name / sev_label / stem
+    out_dir = RESULTS_ROOT / scan_dir.name / sev_label / stem
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     oabase = out_dir / f"run-{ts}"
@@ -1516,7 +1524,7 @@ def main(args):
                         workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
                         tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
 
-                    out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir.name) / Path(chosen.name).stem
+                    out_dir_static = RESULTS_ROOT / scan_dir.name / pretty_severity_label(sev_dir.name) / Path(chosen.name).stem
                     out_dir_static.mkdir(parents=True, exist_ok=True)
 
                     tool_used = False
@@ -2004,7 +2012,7 @@ def main(args):
                     workdir = Path(tempfile.mkdtemp(prefix="nph_work_"))
                     tcp_ips, udp_ips, tcp_sockets = write_work_files(workdir, sample_hosts, ports_str, udp=True)
 
-                out_dir_static = Path("scan_artifacts") / scan_dir.name / pretty_severity_label(sev_dir_for_file.name) / Path(chosen.name).stem
+                out_dir_static = RESULTS_ROOT / scan_dir.name / pretty_severity_label(sev_dir_for_file.name) / Path(chosen.name).stem
                 out_dir_static.mkdir(parents=True, exist_ok=True)
 
                 tool_used = False
