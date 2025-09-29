@@ -1350,7 +1350,11 @@ def main(args):
                         if not candidates:
                             warn("No files match the current filter.")
                             continue
-                        confirm = input(f"You are about to rename {len(candidates)} files with prefix 'REVIEW_COMPLETE-'.\nType 'mark' to confirm, or anything else to cancel: ").strip().lower()
+                        confirm_msg = (
+                            f"You are about to rename {len(candidates)} files with prefix 'REVIEW_COMPLETE-'.\n"
+                            "Type 'mark' to confirm, or anything else to cancel: "
+                        )
+                        confirm = input(f"{C.RED}{confirm_msg}{C.RESET}").strip().lower()
                         if confirm != "mark":
                             info("Canceled.")
                             continue
@@ -1832,7 +1836,11 @@ def main(args):
                     if not candidates:
                         warn("No files match the current filter.")
                         continue
-                    confirm = input(f"You are about to rename {len(candidates)} files with prefix 'REVIEW_COMPLETE-'.\nType 'mark' to confirm, or anything else to cancel: ").strip().lower()
+                    confirm_msg = (
+                        f"You are about to rename {len(candidates)} files with prefix 'REVIEW_COMPLETE-'.\n"
+                        "Type 'mark' to confirm, or anything else to cancel: "
+                    )
+                    confirm = input(f"{C.RED}{confirm_msg}{C.RESET}").strip().lower()
                     if confirm != "mark":
                         info("Canceled.")
                         continue
