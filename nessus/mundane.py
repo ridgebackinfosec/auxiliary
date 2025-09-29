@@ -540,8 +540,11 @@ def _rich_severity_cell(label: str) -> Any:
     t.stylize(_severity_style(label))
     return t
 
-def _rich_unreviewed_cell(n: int) -> Any:
-    t = Text(str(n))
+def _rich_unreviewed_cell(n: int, total: int) -> Any:
+    pct = 0
+    if total:
+        pct = round((n / total) * 100)
+    t = Text(f"{n} ({pct}%)")
     if n == 0:
         t.stylize("green")
     elif n <= 10:
@@ -550,8 +553,11 @@ def _rich_unreviewed_cell(n: int) -> Any:
         t.stylize("red")
     return t
 
-def _rich_reviewed_cell(n: int) -> Any:
-    t = Text(str(n))
+def _rich_reviewed_cell(n: int, total: int) -> Any:
+    pct = 0
+    if total:
+        pct = round((n / total) * 100)
+    t = Text(f"{n} ({pct}%)")
     t.stylize("magenta")
     return t
 
@@ -572,8 +578,9 @@ def _render_severity_table(severities, msf_summary=None):
     table = Table(title=None, box=box.SIMPLE, show_lines=False, pad_edge=False)
     table.add_column("#", justify="right", no_wrap=True)
     table.add_column("Severity", no_wrap=True)
-    table.add_column("Unreviewed", justify="right", no_wrap=True)
-    table.add_column("Reviewed", justify="right", no_wrap=True)
+    # Headers now indicate percent (cells contain N (P%))
+    table.add_column("Unreviewed (%)", justify="right", no_wrap=True)
+    table.add_column("Reviewed (%)", justify="right", no_wrap=True)
     table.add_column("Total", justify="right", no_wrap=True)
 
     for i, sd in enumerate(severities, 1):
@@ -582,8 +589,8 @@ def _render_severity_table(severities, msf_summary=None):
         table.add_row(
             str(i),
             _rich_severity_cell(label),
-            _rich_unreviewed_cell(unrev),
-            _rich_reviewed_cell(rev),
+            _rich_unreviewed_cell(unrev, tot),
+            _rich_reviewed_cell(rev, tot),
             _rich_total_cell(tot),
         )
 
@@ -592,8 +599,8 @@ def _render_severity_table(severities, msf_summary=None):
         table.add_row(
             str(idx),
             _rich_severity_cell("Metasploit Module"),
-            _rich_unreviewed_cell(unrev),
-            _rich_reviewed_cell(rev),
+            _rich_unreviewed_cell(unrev, tot),
+            _rich_reviewed_cell(rev, tot),
             _rich_total_cell(tot),
         )
 
@@ -1984,6 +1991,7 @@ def main(args):
                 if len(hosts) > 5:
                     try:
                         do_sample = yesno(f"There are {len(hosts)} hosts. Sample a subset?", default="n")
+                        ...
                     except KeyboardInterrupt:
                         continue
                     if do_sample:
