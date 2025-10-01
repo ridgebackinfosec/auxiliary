@@ -803,7 +803,7 @@ def analyze_inclusions(files):
         if not any((A < item_sets[b]) for b in files if b is not a):
             maximals.append(a)
 
-    # Render summary
+    # Render summary table
     summary = Table(title=None, box=box.SIMPLE, show_lines=False, pad_edge=False)
     summary.add_column("#", justify="right", no_wrap=True)
     summary.add_column("File")
@@ -813,25 +813,42 @@ def analyze_inclusions(files):
         summary.add_row(str(i), f.name, str(len(item_sets[f])), str(len(cover_map[f])))
     _console_global.print(summary)
 
-    # Build groups: for each maximal file, include all files it covers (including itself)
-    groups = []
-    for m in sorted(maximals, key=lambda p: (-len(cover_map[p]), natural_key(p.name))):
-        names = sorted([m.name] + [x.name for x in cover_map[m]], key=natural_key)
-        groups.append(names)
+    # Build groups with explicit root (superset) and covered list (without root)
+    groups = []  # list of tuples (root_path, covered_paths_sorted)
+    for mfile in sorted(maximals, key=lambda p: (-len(cover_map[p]), natural_key(p.name))):
+        covered = sorted(list(cover_map[mfile]), key=lambda p: natural_key(p.name))
+        groups.append((mfile, covered))
 
     if groups:
         groups_tbl = Table(title="Superset Coverage Groups", box=box.SIMPLE, show_lines=False, pad_edge=False)
         groups_tbl.add_column("#", justify="right", no_wrap=True)
-        groups_tbl.add_column("Covered files", justify="right", no_wrap=True)
-        groups_tbl.add_column("Files (sample)")
-        for i, names in enumerate(groups, 1):
-            sample = "\n".join(names[:8]) + (f"\n... (+{len(names)-8} more)" if len(names) > 8 else "")
-            groups_tbl.add_row(str(i), str(len(names)), sample)
+        groups_tbl.add_column("Superset (root)")
+        groups_tbl.add_column("Covers", justify="right", no_wrap=True)
+        groups_tbl.add_column("Covered files (sample)")
+        for i, (root, covered_list) in enumerate(groups, 1):
+            sample_names = [p.name for p in covered_list[:8]]
+            sample = "\n".join(sample_names) + (f"\n... (+{len(covered_list)-8} more)" if len(covered_list) > 8 else "")
+            groups_tbl.add_row(str(i), root.name, str(len(covered_list)), sample or "—")
         _console_global.print(groups_tbl)
+
+        print()
+        header("Coverage edges (root ⊇ covered)")
+        for i, (root, covered_list) in enumerate(groups, 1):
+            if not covered_list:
+                continue
+            names = [p.name for p in covered_list]
+            head = ", ".join(names[:6])
+            tail = f", ... (+{len(names)-6} more)" if len(names) > 6 else ""
+            info(f"[g{i}] {root.name} ⊇ {head}{tail}")
     else:
         info("\nNo coverage relationships detected (all sets are disjoint or mutually incomparable).")
 
-    return groups
+    # Convert back to name groups (root + covered) for filtering behavior.
+    name_groups = []
+    for root, covered_list in groups:
+        names = [root.name] + [p.name for p in covered_list]
+        name_groups.append(names)
+    return name_groups
 
 # -------- Sorting helpers for file list --------
 def natural_key(s: str):
