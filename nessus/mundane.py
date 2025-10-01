@@ -914,6 +914,16 @@ def _grouped_paged_text(path: Path) -> str:
     body = _grouped_payload_text(path)
     return f"Grouped view: {path.name}\n{body}"
 
+# === New: hosts-only helpers ===
+def _hosts_only_payload_text(path: Path) -> str:
+    """Return hosts (IPs or FQDNs) one-per-line without any port information."""
+    hosts, _ports, _combos, _had_explicit = parse_file_hosts_ports_detailed(path)
+    return "\n".join(hosts) + ("\n" if hosts else "")
+
+def _hosts_only_paged_text(path: Path) -> str:
+    body = _hosts_only_payload_text(path)
+    return f"Hosts-only view: {path.name}\n{body}"
+
 # ---------- Run tools with a Rich spinner ----------
 def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[str] = None) -> int:
     disp = cmd if isinstance(cmd, str) else " ".join(str(x) for x in cmd)
@@ -1445,7 +1455,7 @@ def main(args):
                         info(f"Ports detected: {ports_str}")
 
                     try:
-                        view_choice = input("\nView file? [R]aw / [G]rouped / [C] Copy / [N]one (default=N): ").strip().lower()
+                        view_choice = input("\nView file? [R]aw / [G]rouped / [H]osts-only / [C] Copy / [N]one (default=N): ").strip().lower()
                     except KeyboardInterrupt:
                         continue
                     if view_choice in ("r", "raw"):
@@ -1454,10 +1464,15 @@ def main(args):
                     elif view_choice in ("g", "grouped"):
                         text = _grouped_paged_text(chosen)
                         menu_pager(text)
+                    elif view_choice in ("h", "hosts", "hosts-only"):
+                        text = _hosts_only_paged_text(chosen)
+                        menu_pager(text)
                     elif view_choice in ("c", "copy"):
-                        sub = input("Copy [R]aw or [G]rouped? (default=G): ").strip().lower()
+                        sub = input("Copy [R]aw / [G]rouped / [H]osts-only? (default=G): ").strip().lower()
                         if sub in ("", "g", "grouped"):
                             payload = _grouped_payload_text(chosen)
+                        elif sub in ("h", "hosts", "hosts-only"):
+                            payload = _hosts_only_payload_text(chosen)
                         else:
                             payload = _file_raw_payload_text(chosen)
                         ok_flag, detail = copy_to_clipboard(payload)
@@ -1933,7 +1948,7 @@ def main(args):
                     info(f"Ports detected: {ports_str}")
 
                 try:
-                    view_choice = input("\nView file? [R]aw / [G]rouped / [C] Copy / [N]one (default=N): ").strip().lower()
+                    view_choice = input("\nView file? [R]aw / [G]rouped / [H]osts-only / [C] Copy / [N]one (default=N): ").strip().lower()
                 except KeyboardInterrupt:
                     continue
                 if view_choice in ("r", "raw"):
@@ -1942,10 +1957,15 @@ def main(args):
                 elif view_choice in ("g", "grouped"):
                     text = _grouped_paged_text(chosen)
                     menu_pager(text)
+                elif view_choice in ("h", "hosts", "hosts-only"):
+                    text = _hosts_only_paged_text(chosen)
+                    menu_pager(text)
                 elif view_choice in ("c", "copy"):
-                    sub = input("Copy [R]aw or [G]rouped? (default=G): ").strip().lower()
+                    sub = input("Copy [R]aw / [G]rouped / [H]osts-only? (default=G): ").strip().lower()
                     if sub in ("", "g", "grouped"):
                         payload = _grouped_payload_text(chosen)
+                    elif sub in ("h", "hosts", "hosts-only"):
+                        payload = _hosts_only_payload_text(chosen)
                     else:
                         payload = _file_raw_payload_text(chosen)
                     ok_flag, detail = copy_to_clipboard(payload)
@@ -1991,7 +2011,6 @@ def main(args):
                 if len(hosts) > 5:
                     try:
                         do_sample = yesno(f"There are {len(hosts)} hosts. Sample a subset?", default="n")
-                        ...
                     except KeyboardInterrupt:
                         continue
                     if do_sample:
