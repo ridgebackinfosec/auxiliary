@@ -2247,7 +2247,7 @@ def summary(
 def wizard(
     nessus: Path = typer.Argument(..., exists=True, readable=True, help="Path to a .nessus file"),
     out_dir: Path = typer.Option(Path("./nessus_plugin_hosts"), "--out-dir", "-o", help="Export output directory"),
-    repo_dir: Path = typer.Option(Path("./vendor/NessusPluginHosts"), "--repo-dir", help="Where to clone the helper repo"),
+    repo_dir: Path = typer.Option(Path.home() / "NessusPluginHosts", "--repo-dir", help="Where to clone the helper repo"),
     review: bool = typer.Option(False, "--review", help="Launch interactive review after export"),
 ):
     # 1) Ensure repo present
@@ -2257,8 +2257,12 @@ def wizard(
     # 2) Run export
     header("Exporting plugin host files")
     out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, "NessusPluginHosts.py", "-f", str(nessus), "--list-plugins", "--export-plugin-hosts", str(out_dir)]
-    run_command_with_progress(cmd, shell=False if os.name != "nt" else False)
+    helper = repo_path / "NessusPluginHosts.py"
+    if not helper.exists():
+        err(f"Helper script not found: {helper}")
+        raise typer.Exit(1)
+    cmd = [sys.executable, str(helper), "-f", str(nessus), "--list-plugins", "--export-plugin-hosts", str(out_dir)]
+    run_command_with_progress(cmd, shell=False)
 
     ok(f"Export complete. Files written under: {out_dir.resolve()}")
     info("Next step:")
