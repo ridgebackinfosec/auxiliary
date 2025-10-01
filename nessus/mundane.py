@@ -726,6 +726,113 @@ def compare_filtered(files):
     )
     return groups_sorted
 
+# ====== Superset / coverage analysis across filtered files ======
+def _build_item_set(hosts, ports_set, combos_map, had_explicit):
+    """
+    Return a set of atomic "items" for inclusion checks.
+    Items are:
+      - 'host:port' when a host has explicit ports (or implicit ports when had_explicit is False)
+      - 'host'      when there are no ports at all for that host/file
+    """
+    items = set()
+    if had_explicit:
+        any_ports = any(bool(v) for v in combos_map.values())
+        if any_ports:
+            for h in hosts:
+                ps = combos_map.get(h, set())
+                if ps:
+                    for p in ps:
+                        items.add(f"{h}:{p}")
+                else:
+                    # Host present but no explicit ports for it — treat as bare host
+                    items.add(h)
+        else:
+            # Defensive: had_explicit True but no ports recorded → fall back to bare hosts
+            for h in hosts:
+                items.add(h)
+    else:
+        # No explicit combos; interpret as Cartesian product hosts x ports_set, or bare hosts if no ports
+        if ports_set:
+            for h in hosts:
+                for p in ports_set:
+                    items.add(f"{h}:{p}")
+        else:
+            for h in hosts:
+                items.add(h)
+    return items
+
+def analyze_inclusions(files):
+    if not files:
+        warn("No files selected for superset analysis.")
+        return []
+
+    header("Filtered Files: Superset / Coverage Analysis")
+    info(f"Files analyzed: {len(files)}")
+
+    parsed = []
+    item_sets = {}
+    with Progress(
+        SpinnerColumn(style="cyan"),
+        ProgTextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=_console_global,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Parsing files...", total=len(files))
+        for f in files:
+            hosts, ports_set, combos, had_explicit = parse_file_hosts_ports_detailed(f)
+            parsed.append((f, hosts, ports_set, combos, had_explicit))
+            item_sets[f] = _build_item_set(hosts, ports_set, combos, had_explicit)
+            progress.advance(task)
+
+    # Build coverage map: for each file, which others does it fully include?
+    cover_map = {f: set() for f in files}
+    for i, a in enumerate(files):
+        A = item_sets[a]
+        for j, b in enumerate(files):
+            if i == j:
+                continue
+            B = item_sets[b]
+            if B.issubset(A):
+                cover_map[a].add(b)
+
+    # Maximals = files not strictly contained by any other
+    maximals = []
+    for a in files:
+        A = item_sets[a]
+        if not any((A < item_sets[b]) for b in files if b is not a):
+            maximals.append(a)
+
+    # Render summary
+    summary = Table(title=None, box=box.SIMPLE, show_lines=False, pad_edge=False)
+    summary.add_column("#", justify="right", no_wrap=True)
+    summary.add_column("File")
+    summary.add_column("Items", justify="right", no_wrap=True)
+    summary.add_column("Covers", justify="right", no_wrap=True)
+    for i, f in enumerate(files, 1):
+        summary.add_row(str(i), f.name, str(len(item_sets[f])), str(len(cover_map[f])))
+    _console_global.print(summary)
+
+    # Build groups: for each maximal file, include all files it covers (including itself)
+    groups = []
+    for m in sorted(maximals, key=lambda p: (-len(cover_map[p]), natural_key(p.name))):
+        names = sorted([m.name] + [x.name for x in cover_map[m]], key=natural_key)
+        groups.append(names)
+
+    if groups:
+        groups_tbl = Table(title="Superset Coverage Groups", box=box.SIMPLE, show_lines=False, pad_edge=False)
+        groups_tbl.add_column("#", justify="right", no_wrap=True)
+        groups_tbl.add_column("Covered files", justify="right", no_wrap=True)
+        groups_tbl.add_column("Files (sample)")
+        for i, names in enumerate(groups, 1):
+            sample = "\n".join(names[:8]) + (f"\n... (+{len(names)-8} more)" if len(names) > 8 else "")
+            groups_tbl.add_row(str(i), str(len(names)), sample)
+        _console_global.print(groups_tbl)
+    else:
+        info("\nNo coverage relationships detected (all sets are disjoint or mutually incomparable).")
+
+    return groups
+
 # -------- Sorting helpers for file list --------
 def natural_key(s: str):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
@@ -1009,6 +1116,7 @@ def render_actions_footer(*, group_applied: bool, candidates_count: int, sort_mo
     left_row2  = _join_actions_texts([
         _key_text("R", "Reviewed files"),
         _key_text("H", "Compare"),
+        _key_text("I", "Superset analysis"),
         _key_text("M", f"Mark ALL filtered as REVIEW_COMPLETE ({candidates_count})"),
     ])
     right_items = [
@@ -1034,7 +1142,9 @@ def show_actions_help(*, group_applied: bool, candidates_count: int, sort_mode: 
     t.add_row(Text("Filtering", style="bold"), _key_text("F", "Set filter"), _key_text("C", "Clear filter"))
     t.add_row(Text("Sorting", style="bold"), _key_text("O", f"Toggle sort (now: {'Hosts' if sort_mode=='hosts' else 'Name'})"))
     t.add_row(Text("Bulk review", style="bold"), _key_text("M", f"Mark ALL filtered as REVIEW_COMPLETE ({candidates_count})"))
-    t.add_row(Text("Analysis", style="bold"), _key_text("H", "Compare hosts/ports in filtered files"))
+    t.add_row(Text("Analysis", style="bold"),
+              _key_text("H", "Compare hosts/ports (identical)"),
+              _key_text("I", "Superset / coverage groups"))
     if group_applied:
         t.add_row(Text("Groups", style="bold"), _key_text("X", "Clear group filter"))
     panel = Panel(t, title="Actions", border_style="cyan")
@@ -1417,6 +1527,25 @@ def main(args):
                                 if 0 <= idx < len(groups):
                                     group_filter = (idx + 1, set(groups[idx]))
                                     ok(f"Applied group filter #{idx+1} ({len(groups[idx])} files).")
+                                    page_idx = 0
+                        continue
+                    if ans2 == "i":
+                        if not candidates:
+                            warn("No files match the current filter.")
+                            continue
+                        groups = analyze_inclusions(candidates)
+                        if groups:
+                            visible = min(5, len(groups))
+                            opts = " | ".join(f"g{i+1}" for i in range(visible))
+                            ellipsis = " | etc." if len(groups) > visible else ""
+                            choice = input(
+                                f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: "
+                            ).strip().lower()
+                            if choice.startswith("g") and choice[1:].isdigit():
+                                idx = int(choice[1:]) - 1
+                                if 0 <= idx < len(groups):
+                                    group_filter = (idx + 1, set(groups[idx]))
+                                    ok(f"Applied superset group #{idx+1} ({len(groups[idx])} files).")
                                     page_idx = 0
                         continue
 
@@ -1908,6 +2037,25 @@ def main(args):
                             if 0 <= idx < len(groups):
                                 group_filter = (idx + 1, set(groups[idx]))
                                 ok(f"Applied group filter #{idx+1} ({len(groups[idx])} files).")
+                                page_idx = 0
+                    continue
+                if ans3 == "i":
+                    if not candidates:
+                        warn("No files match the current filter.")
+                        continue
+                    groups = analyze_inclusions(candidates)
+                    if groups:
+                        visible = min(5, len(groups))
+                        opts = " | ".join(f"g{i+1}" for i in range(visible))
+                        ellipsis = " | etc." if len(groups) > visible else ""
+                        choice = input(
+                            f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: "
+                        ).strip().lower()
+                        if choice.startswith("g") and choice[1:].isdigit():
+                            idx = int(choice[1:]) - 1
+                            if 0 <= idx < len(groups):
+                                group_filter = (idx + 1, set(groups[idx]))
+                                ok(f"Applied superset group #{idx+1} ({len(groups[idx])} files).")
                                 page_idx = 0
                     continue
 
