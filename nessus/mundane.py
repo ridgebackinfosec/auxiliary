@@ -761,6 +761,7 @@ def _build_item_set(hosts, ports_set, combos_map, had_explicit):
                 items.add(h)
     return items
 
+
 def analyze_inclusions(files):
     if not files:
         warn("No files selected for superset analysis.")
@@ -830,16 +831,6 @@ def analyze_inclusions(files):
             sample = "\n".join(sample_names) + (f"\n... (+{len(covered_list)-8} more)" if len(covered_list) > 8 else "")
             groups_tbl.add_row(str(i), root.name, str(len(covered_list)), sample or "—")
         _console_global.print(groups_tbl)
-
-        print()
-        header("Coverage edges (root ⊇ covered)")
-        for i, (root, covered_list) in enumerate(groups, 1):
-            if not covered_list:
-                continue
-            names = [p.name for p in covered_list]
-            head = ", ".join(names[:6])
-            tail = f", ... (+{len(names)-6} more)" if len(names) > 6 else ""
-            info(f"[g{i}] {root.name} ⊇ {head}{tail}")
     else:
         info("\nNo coverage relationships detected (all sets are disjoint or mutually incomparable).")
 
@@ -849,6 +840,7 @@ def analyze_inclusions(files):
         names = [root.name] + [p.name for p in covered_list]
         name_groups.append(names)
     return name_groups
+
 
 # -------- Sorting helpers for file list --------
 def natural_key(s: str):
