@@ -1046,6 +1046,42 @@ def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[
     if len(disp) > 120:
         disp = disp[:117] + "..."
 
+
+    # Delay spinner until after sudo password (if needed)
+    try:
+        def _cmd_starts_with_sudo(c):
+            import os, re
+            if isinstance(c, list):
+                return len(c) > 0 and os.path.basename(str(c[0])) == "sudo"
+            if isinstance(c, str):
+                return bool(re.match(r'^\s*(?:\S*/)?sudo\b', c))
+            return False
+
+        if _cmd_starts_with_sudo(cmd):
+            # Check if sudo is already validated (non-interactive); 0 => cached
+            try:
+                _chk = subprocess.run(["sudo", "-vn"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                needs_pw = (_chk.returncode != 0)
+            except Exception:
+                needs_pw = True  # be conservative
+
+            if needs_pw:
+                print(f"{C.YELLOW}Waiting for sudo password...{C.RESET} (type it when prompted below)")
+                # Prompt the user once, blocking, before launching the actual command.
+                # This allows the spinner to only start after authentication is satisfied.
+                try:
+                    subprocess.run(["sudo", "-v"], check=True)
+                except KeyboardInterrupt:
+                    # Propagate so upstream code can handle graceful termination
+                    raise
+                except subprocess.CalledProcessError as _e:
+                    # The user failed sudo; abort early with a useful message.
+                    raise subprocess.CalledProcessError(_e.returncode, _e.cmd)
+    except Exception:
+        # Non-fatal: even if pre-validation fails, fallback to normal behavior.
+        pass
+
+
     if isinstance(cmd, list):
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     else:
