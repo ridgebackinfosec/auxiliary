@@ -13,6 +13,18 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.traceback import install as rich_tb_install
+
+# --- Optional config loading (TOML) & structured logging (no behavior changes) ---
+import logging
+_DEFAULT_RESULTS_ROOT = 'scan_artifacts'
+
+# Simple logger (kept inert unless you set MUNDANE_LOG_FILE). Does not change console Rich output.
+_LOG = logging.getLogger("mundane")
+if not _LOG.handlers:
+    _LOG.setLevel(logging.INFO)
+    _h = logging.NullHandler()
+    _LOG.addHandler(_h)
+
 from rich import box
 from rich.text import Text
 from rich.progress import Progress, SpinnerColumn, TextColumn as ProgTextColumn, TimeElapsedColumn
@@ -25,7 +37,7 @@ _console_global = Console()
 rich_tb_install(show_locals=False)
 
 # ========== Centralized constants ==========
-RESULTS_ROOT: Path = Path(os.environ.get("NPH_RESULTS_ROOT", "scan_artifacts"))
+RESULTS_ROOT: Path = Path(os.environ.get("NPH_RESULTS_ROOT", _DEFAULT_RESULTS_ROOT))
 REVIEW_PREFIX: str = "REVIEW_COMPLETE-"
 
 # ========== Colors & helpers ==========
@@ -1041,6 +1053,36 @@ def _hosts_only_paged_text(path: Path) -> str:
     return f"Hosts-only view: {path.name}\n{body}"
 
 # ---------- Run tools with a Rich spinner ----------
+
+def _sudo_preflight_for_cmd(cmd) -> None:
+    """
+    If the command will use sudo, ensure we prompt clearly and validate credentials
+    *before* showing a spinner. Centralized and backward-compatible.
+    """
+    try:
+        needs_sudo = False
+        if isinstance(cmd, list):
+            needs_sudo = any(str(x) == "sudo" for x in cmd)
+        elif isinstance(cmd, str):
+            needs_sudo = cmd.strip().startswith("sudo ")
+        if needs_sudo:
+            print(fmt_action('This command may prompt for sudo...'))
+        if not needs_sudo:
+            return
+
+        # If we already have cached creds, nothing will be printed.
+        _chk = subprocess.run(["sudo", "-vn"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if _chk.returncode != 0:
+            print(fmt_action("Waiting for sudo password..."))
+            try:
+                subprocess.run(["sudo", "-v"], check=True)
+            except KeyboardInterrupt:
+                raise
+            except subprocess.CalledProcessError as _e:
+                raise subprocess.CalledProcessError(_e.returncode, _e.cmd)
+    except Exception:
+        # Non-fatal; proceed and let the command prompt naturally.
+        pass
 def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[str] = None) -> int:
     disp = cmd if isinstance(cmd, str) else " ".join(str(x) for x in cmd)
     if len(disp) > 120:
@@ -1048,6 +1090,7 @@ def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[
 
 
     # Delay spinner until after sudo password (if needed)
+    _sudo_preflight_for_cmd(cmd)
     try:
         def _cmd_starts_with_sudo(c):
             import os, re
@@ -2488,4 +2531,13 @@ def wizard(
             warn("\nInterrupted — returning to shell.")
 
 if __name__ == "__main__":
+
+    # Optional: enable file logging via env var without changing terminal UX
+    _log_file = os.environ.get("MUNDANE_LOG_FILE")
+    if _log_file and isinstance(_LOG.handlers[0], logging.NullHandler):
+        fh = logging.FileHandler(_log_file, encoding="utf-8")
+        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        fh.setFormatter(fmt)
+        _LOG.addHandler(fh)
+
     app()
