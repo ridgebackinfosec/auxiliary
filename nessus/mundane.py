@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-# mundane.py
+# --- import path shim (supports both `python mundane.py` and `python -m mundane`) ---
+import sys
+from pathlib import Path
+
+_here = Path(__file__).resolve().parent
+if str(_here) not in sys.path:
+    sys.path.insert(0, str(_here))
 
 from mundane_pkg import (
     # ops
