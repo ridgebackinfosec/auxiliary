@@ -1,6 +1,24 @@
 #!/usr/bin/env python3
 # mundane.py
 
+from mundane_pkg import (
+    # ops
+    require_cmd, resolve_cmd, root_or_sudo_available,
+    run_command_with_progress, clone_nessus_plugin_hosts,
+
+    # parsing
+    _is_ipv6, _is_ipv4, _is_valid_token,
+    _build_item_set, _normalize_combos, _parse_for_overview,
+
+    # constants
+    RESULTS_ROOT, REVIEW_PREFIX, PLUGIN_DETAILS_BASE,
+    NETEXEC_PROTOCOLS, NSE_PROFILES,
+
+    # ansi / labels
+    C, header, ok, warn, err, info,
+    fmt_action, fmt_reviewed, cyan_label, colorize_severity_label,
+)
+
 import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, types, math
 from pathlib import Path
 from datetime import datetime
@@ -13,7 +31,6 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.traceback import install as rich_tb_install
-from mundane_pkg.constants import RESULTS_ROOT, REVIEW_PREFIX, PLUGIN_DETAILS_BASE, NETEXEC_PROTOCOLS, NSE_PROFILES
 from rich import box
 from rich.text import Text
 from rich.progress import Progress, SpinnerColumn, TextColumn as ProgTextColumn, TimeElapsedColumn
@@ -24,24 +41,6 @@ _console_global = Console()
 
 # Install pretty tracebacks (no try/except; fail loudly if Rich is absent)
 rich_tb_install(show_locals=False)
-
-# ========== Centralized constants ==========
-
-# ========== Colors & helpers ==========
-from mundane_pkg.ansi import C, header, ok, warn, err, info, fmt_action, fmt_reviewed, cyan_label, colorize_severity_label
-
-
-
-def require_cmd(name):
-    if shutil.which(name) is None:
-        err(f"Required command '{name}' not found on PATH.")
-        sys.exit(1)
-
-def resolve_cmd(candidates):
-    for c in candidates:
-        if shutil.which(c):
-            return c
-    return None
 
 def root_or_sudo_available() -> bool:
     try:
@@ -478,20 +477,6 @@ def build_results_paths(scan_dir: Path, sev_dir: Path, plugin_filename: str):
     return out_dir, oabase
 
 # ====== Compare hosts/ports across filtered files ======
-def _normalize_combos(hosts, ports_set, combos_map, had_explicit):
-    if had_explicit and combos_map:
-        items = []
-        for h in hosts:
-            ps = combos_map.get(h, set())
-            items.append((h, tuple(sorted(ps, key=lambda x: int(x)))))
-        return tuple(items)
-    assumed = tuple(sorted(
-        (h, tuple(sorted(ports_set, key=lambda x: int(x))))
-        for h in hosts
-    ))
-    return assumed
-
-# ---------- Rich style helpers ----------
 def _severity_style(label: str) -> str:
     l = label.strip().lower()
     if "critical" in l: return "red"
@@ -694,41 +679,6 @@ def compare_filtered(files):
     return groups_sorted
 
 # ====== Superset / coverage analysis across filtered files ======
-def _build_item_set(hosts, ports_set, combos_map, had_explicit):
-    """
-    Return a set of atomic "items" for inclusion checks.
-    Items are:
-      - 'host:port' when a host has explicit ports (or implicit ports when had_explicit is False)
-      - 'host'      when there are no ports at all for that host/file
-    """
-    items = set()
-    if had_explicit:
-        any_ports = any(bool(v) for v in combos_map.values())
-        if any_ports:
-            for h in hosts:
-                ps = combos_map.get(h, set())
-                if ps:
-                    for p in ps:
-                        items.add(f"{h}:{p}")
-                else:
-                    # Host present but no explicit ports for it — treat as bare host
-                    items.add(h)
-        else:
-            # Defensive: had_explicit True but no ports recorded → fall back to bare hosts
-            for h in hosts:
-                items.add(h)
-    else:
-        # No explicit combos; interpret as Cartesian product hosts x ports_set, or bare hosts if no ports
-        if ports_set:
-            for h in hosts:
-                for p in ports_set:
-                    items.add(f"{h}:{p}")
-        else:
-            for h in hosts:
-                items.add(h)
-    return items
-
-
 def analyze_inclusions(files):
     if not files:
         warn("No files selected for superset analysis.")
@@ -832,59 +782,6 @@ def _is_ipv6(s: str) -> bool:
         return True
     except Exception:
         return False
-
-def _is_valid_token(tok: str):
-    tok = tok.strip()
-    if not tok:
-        return False, None, None
-
-    if tok.startswith("["):
-        m = re.match(r"^\[(.+?)\](?::(\d+))?$", tok)
-        if m and _is_ipv6(m.group(1)):
-            port = m.group(2)
-            if port is None:
-                return True, m.group(1), None
-            if port.isdigit() and 1 <= int(port) <= 65535:
-                return True, m.group(1), port
-        return False, None, None
-
-    if tok.count(":") >= 2 and not re.search(r"]:\d+$", tok):
-        return (_is_ipv6(tok), tok if _is_ipv6(tok) else None, None)
-
-    if ":" in tok:
-        h, p = tok.rsplit(":", 1)
-        if p.isdigit() and 1 <= int(p) <= 65535 and (_is_hostname(h) or _is_ipv4(h)):
-            return True, h, p
-        return False, None, None
-
-    if _is_hostname(tok) or _is_ipv4(tok) or _is_ipv6(tok):
-        return True, tok, None
-
-    return False, None, None
-
-def _parse_for_overview(path: Path):
-    """(hosts, ports:set, combos, had_explicit, malformed_count)"""
-    hosts = []
-    ports = set()
-    combos = defaultdict(set)
-    malformed = 0
-    text = path.read_text(encoding="utf-8", errors="ignore")
-    for raw in text.splitlines():
-        ln = raw.strip()
-        if not ln:
-            continue
-        for tok in re.split(r"[\s,]+", ln):
-            valid, h, p = _is_valid_token(tok)
-            if not valid:
-                malformed += 1
-                continue
-            hosts.append(h)
-            if p:
-                ports.add(p)
-                combos[h].add(p)
-    hosts = list(dict.fromkeys(hosts))
-    had_explicit = any(combos[h] for h in combos)
-    return hosts, ports, combos, had_explicit, malformed
 
 def _count_reviewed_in_scan(scan_dir: Path):
     total_files = 0
