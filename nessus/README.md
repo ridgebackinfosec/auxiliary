@@ -1,29 +1,63 @@
 # mundane.py
 
-A small TUI helper to **review Nessus plugin host files** quickly and (optionally) kick off focused checks with **nmap** or **NetExec**. Includes a one-step **wizard** to seed the export structure directly from a `.nessus` file.
+A modernized **TUI helper** to review Nessus plugin host files quickly and kick off focused checks with **nmap**, **NetExec**, or custom commands. Includes a one-step **wizard** to seed an export structure directly from a `.nessus` file.
+
+- **Status:** Phases 1–6 complete (env config, sudo preflight + prompt defaults, canonical parser + cache, data/render separation, tool registry foundation, logging + timing).
+- **Defaults preserved:** CLI flags, prompts, and outputs are unchanged.
 
 ---
 
 ## Requirements
 
-- Python 3.8+
+- **Python 3.11+** (3.8+ may still work but is not the target)
 - Install Python deps:
   ```bash
   pip install -r requirements.txt
   ```
-  (uses: `rich`, `typer`, `pyperclip`, `colorama`)
-- Optional external tools (only if you choose to run them):
-  - `git` (required for `wizard`)
+  Uses: `rich`, `typer`, `pyperclip`, `colorama`, `loguru`
+- Optional external tools (only when you run them):
+  - `git` – used by the wizard to clone **NessusPluginHosts**
   - `nmap`
-  - `nxc` or `netexec`
-- Unix-like shell recommended. On Linux, clipboard copy may require one of: `xclip`, `wl-copy`, or `xsel`.
+  - `nxc` / `netexec`
+- Linux recommended. For clipboard copy you may need `xclip`, `xsel`, or `wl-copy`.
 
 ---
 
-## Quick Start
+## Environment configuration (no config files required)
+
+All runtime defaults are controlled via environment variables:
+
+| Variable | Description | Default |
+|---|---|---|
+| `MUNDANE_LOG` | Log file path | `~/mundane.log` |
+| `MUNDANE_DEBUG` | DEBUG logging when truthy (`1`, `true`, `on`) | off |
+| `MUNDANE_PROMPT` | Enable confirmation prompts | on |
+| `MUNDANE_SUDO_PREFLIGHT` | Run sudo preflight checks | on |
+
+Example:
+```bash
+export MUNDANE_LOG="$PWD/mundane.log"
+export MUNDANE_DEBUG=1
+python mundane.py review
+tail -f mundane.log
+```
+
+---
+
+## Logging & diagnostics
+
+- Prefers **loguru** with rotation/retention; automatically falls back to stdlib `logging` if unavailable or file sink creation fails.
+- Parent directory is created for the log file.
+- `_log_info/_log_debug/_log_error` shims keep the rest of the code backend‑agnostic.
+- Global `sys.excepthook` logs unhandled exceptions (Rich still shows pretty tracebacks).
+- `@log_timing` decorates key functions to log execution time at DEBUG level.
+
+---
+
+## Quick start
 
 ### 1) Seed exports from a `.nessus` (wizard)
-This clones **NessusPluginHosts** and exports plugin hostlists into `./nessus_plugin_hosts`:
+Clone **NessusPluginHosts** and export plugin hostlists into `./nessus_plugin_hosts`:
 
 ```bash
 python mundane.py wizard path/to/scan.nessus
@@ -40,25 +74,27 @@ python mundane.py review --export-root ./nessus_plugin_hosts
 
 ---
 
-## What You Can Do
+## Features
 
-- **Browse scans & severities** with clean Rich tables.
-- **Preview files** before acting (shows **Plugin Details** link like `https://www.tenable.com/plugins/nessus/<ID>`).
-- **Paged views** for long outputs with familiar controls: **[N]**ext, **[P]**rev, **[B]**ack (single-page views auto-return).
+- **Browse scans & severities** in Rich tables.
+- **Preview plugin files** before acting (with a link to Tenable plugin details).
+- **Paged views** with `[N]ext`, `[P]rev`, `[B]ack` navigation.
 - **Grouped view** (`host:port,port`) or raw file view.
-- **Copy to clipboard** from file view (**[C] Copy**) or the command review dialog.
-- **Run tools** against current hosts:
-  - `nmap` (choose NSE profiles; SNMP/IPMI auto-switch to UDP)
-  - `netexec`/`nxc` (SMB relay list generation included)
-  - **Custom commands** with placeholders (see below)
-- **Compare files**: find identical host:port combo groups across filtered files.
-- **Bulk mark** filtered files as `REVIEW_COMPLETE-...` with confirmation.
-- **Scan overview** (auto after selecting a scan): totals, empty/malformed counts, IPv4/IPv6 split, top ports, identical groups.
-- **Progress indicators** while cloning, exporting, parsing, grouping, bulk-marking, and running tools.
+- **Clipboard copy** for any file or command.
+- **Run tools** against hosts:
+  - `nmap` (profiles and UDP handling supported)
+  - `netexec` / `nxc`
+  - **Custom templates** with placeholder substitution
+- **Compare** plugin hostlists across severities.
+- **Coverage/superset** analysis across files.
+- **Bulk mark** reviewed files as `REVIEW_COMPLETE-...`.
+- **Scan overview** summaries (totals, top ports, identical groups).
+- **Progress indicators** for cloning, parsing, exporting, or running tools.
+- **Registry-driven tool system** (nmap/netexec today; others can be added later).
 
 ---
 
-## Commands
+## Commands (common)
 
 ```bash
 # Wizard: seed exported plugin files from a .nessus scan (then optionally review)
@@ -77,16 +113,21 @@ python mundane.py compare 4_Critical/*.txt
 python mundane.py view nessus_plugin_hosts/<Scan>/<Severity>/<Plugin>.txt [--grouped]
 ```
 
-### Custom command placeholders
-When running a custom command, you can use these tokens (expanded at runtime):
+---
 
-- `{TCP_IPS}` – file containing hosts (one per line)
-- `{UDP_IPS}` – same as above, used when needed by UDP
-- `{TCP_HOST_PORTS}` – file with `host:port1,port2,...`
-- `{PORTS}` – comma-separated ports string (if detected)
-- `{WORKDIR}` – temp working directory for the run
-- `{RESULTS_DIR}` – persistent results directory for the plugin
-- `{OABASE}` – base path prefix for output artifacts (e.g., `nmap -oA {OABASE}`)
+## Custom command placeholders
+
+When defining or executing custom commands, placeholders are substituted at runtime:
+
+| Placeholder | Meaning |
+|---|---|
+| `{TCP_IPS}` | File with one IP per line |
+| `{UDP_IPS}` | File with UDP targets |
+| `{TCP_HOST_PORTS}` | `host:port1,port2,...` |
+| `{PORTS}` | Comma‑separated ports |
+| `{WORKDIR}` | Temporary workspace |
+| `{RESULTS_DIR}` | Persistent results directory |
+| `{OABASE}` | Base path for output artifacts |
 
 **Examples**
 ```bash
@@ -97,15 +138,26 @@ cat {TCP_IPS} | xargs -I{} sh -c 'echo {}; nmap -Pn -p {PORTS} {}'
 
 ---
 
-## Tips
+## Architecture notes (Phases 1–6)
 
-- Colors can be disabled by setting `NO_COLOR=1` or using a dumb terminal (`TERM=dumb`).
-- Not running as root and no `sudo` available may limit UDP/NSE behavior—mundane will warn you.
-- Clipboard: if headless Linux lacks a clipboard utility, copy prompts will print content for manual copy.
+- **Canonical parsing**: one parser creates a `ParsedHostsPorts` model (stable host order, unique sorted ports, explicit `host:port` detection) with a small in‑process cache.
+- **Data vs render separation**: `build_compare_data()` and `build_coverage_data()` compute pure data; rendering wrappers keep Rich output unchanged.
+- **Tool registry**: `ToolSpec` (`builder: Callable[[dict], tuple[Any, dict]]`) with entries for `nmap` and `netexec`; legacy builders remain for backward compatibility.
+- **Constants & helpers**: centralized constants; unified severity/label helpers (`_severity_color_name`, `_ansi_from_style`, `label()` + `cyan_label()`).
+- **Sudo preflight & prompts**: both enabled by default via env‑driven settings.
 
 ---
 
-## Directory Layout (after wizard)
+## Tips
+
+- Disable colors with `NO_COLOR=1` or in a dumb terminal (`TERM=dumb`).
+- Not running as root without `sudo` may restrict UDP/NSE; you’ll be warned.
+- On headless Linux without clipboard utilities, the script prints copy targets.
+- Log rotation (~1 MB) keeps logs manageable.
+
+---
+
+## Directory layout (after wizard)
 
 ```
 nessus_plugin_hosts/
@@ -127,4 +179,4 @@ scan_artifacts/
 
 This tool orchestrates local utilities and uses data produced by
 [DefensiveOrigins/NessusPluginHosts](https://github.com/DefensiveOrigins/NessusPluginHosts).
-Respect each dependency’s license and your environment’s usage policies.
+Respect all dependencies’ licenses and your organization’s policies.
