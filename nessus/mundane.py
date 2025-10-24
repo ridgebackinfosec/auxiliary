@@ -13,18 +13,6 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.traceback import install as rich_tb_install
-
-# --- Optional config loading (TOML) & structured logging (no behavior changes) ---
-import logging
-_DEFAULT_RESULTS_ROOT = 'scan_artifacts'
-
-# Simple logger (kept inert unless you set MUNDANE_LOG_FILE). Does not change console Rich output.
-_LOG = logging.getLogger("mundane")
-if not _LOG.handlers:
-    _LOG.setLevel(logging.INFO)
-    _h = logging.NullHandler()
-    _LOG.addHandler(_h)
-
 from rich import box
 from rich.text import Text
 from rich.progress import Progress, SpinnerColumn, TextColumn as ProgTextColumn, TimeElapsedColumn
@@ -37,7 +25,7 @@ _console_global = Console()
 rich_tb_install(show_locals=False)
 
 # ========== Centralized constants ==========
-RESULTS_ROOT: Path = Path(os.environ.get("NPH_RESULTS_ROOT", _DEFAULT_RESULTS_ROOT))
+RESULTS_ROOT: Path = Path(os.environ.get("NPH_RESULTS_ROOT", "scan_artifacts"))
 REVIEW_PREFIX: str = "REVIEW_COMPLETE-"
 
 # ========== Colors & helpers ==========
@@ -522,6 +510,149 @@ def build_results_paths(scan_dir: Path, sev_dir: Path, plugin_filename: str):
     oabase = out_dir / f"run-{ts}"
     return out_dir, oabase
 
+
+# ========== Phase 4: Data vs Rendering Separation (non-breaking scaffolding) ==========
+def build_compare_data(files: list[Path]) -> dict:
+    """Pure computation of comparison model across filtered files.
+    Returns a dict with keys used by rendering:
+      - parsed: list of (path, hosts:set[str], ports:set[str], items:set[str], combos_sig:any)
+      - host_intersection, host_union, port_intersection, port_union: set[str]
+      - same_hosts, same_ports, same_combos: bool
+      - groups_sorted: list[tuple[Path, list[Path]]]  (coverage groups root -> covered list)
+    No printing or Rich usage; safe for tests or non-interactive use.
+    """
+    if not files:
+        return {
+            "parsed": [],
+            "host_intersection": set(),
+            "host_union": set(),
+            "port_intersection": set(),
+            "port_union": set(),
+            "same_hosts": True,
+            "same_ports": True,
+            "same_combos": True,
+            "groups_sorted": [],
+        }
+
+    # Parse with existing helpers
+    parsed = []
+    for path in files:
+        hosts, ports, combos, had_explicit = _parse_for_overview(path)
+        items = _build_item_set(hosts, ports, combos, had_explicit)
+        combo_sig = _normalize_combos(hosts, ports, combos, had_explicit)
+        parsed.append((path, set(hosts), set(ports), items, combo_sig))
+
+    # Intersections/unions
+    host_sets = [p[1] for p in parsed]
+    port_sets = [p[2] for p in parsed]
+
+    host_intersection = set.intersection(*host_sets) if host_sets else set()
+    host_union = set.union(*host_sets) if host_sets else set()
+    port_intersection = set.intersection(*port_sets) if port_sets else set()
+    port_union = set.union(*port_sets) if port_sets else set()
+
+    # Equality checks
+    same_hosts = all(s == host_sets[0] for s in host_sets[1:]) if host_sets else True
+    same_ports = all(s == port_sets[0] for s in port_sets[1:]) if port_sets else True
+    same_combos = all(parsed[i][4] == parsed[0][4] for i in range(1, len(parsed))) if parsed else True
+
+    # Coverage groups (A covers B if items(B) ⊆ items(A))
+    files_only = [p[0] for p in parsed]
+    items_map = {p[0]: p[3] for p in parsed}
+    cover_groups = []
+    for a in files_only:
+        A = items_map[a]
+        covered = []
+        for b in files_only:
+            if a is b: 
+                continue
+            B = items_map[b]
+            if B.issubset(A):
+                covered.append(b)
+        if covered:
+            cover_groups.append((a, covered))
+
+    # Sort for stability in UI
+    groups_sorted = sorted(cover_groups, key=lambda t: t[0].name)
+
+    return {
+        "parsed": parsed,
+        "host_intersection": host_intersection,
+        "host_union": host_union,
+        "port_intersection": port_intersection,
+        "port_union": port_union,
+        "same_hosts": same_hosts,
+        "same_ports": same_ports,
+        "same_combos": same_combos,
+        "groups_sorted": groups_sorted,
+    }
+
+
+def render_compare_data(model: dict) -> None:
+    """Render comparison model using the existing _render_compare_tables."""
+    if not model:
+        return
+    _render_compare_tables(
+        model.get("parsed", []),
+        model.get("host_intersection", set()),
+        model.get("host_union", set()),
+        model.get("port_intersection", set()),
+        model.get("port_union", set()),
+        model.get("same_hosts", True),
+        model.get("same_ports", True),
+        model.get("same_combos", True),
+        model.get("groups_sorted", []),
+    )
+
+
+def build_coverage_data(files: list[Path]) -> dict:
+    """Pure computation of coverage (superset/inclusion) model across files.
+    Returns dict with keys:
+      - item_sets: dict[Path, set[str]]
+      - cover_map: dict[Path, set[Path]]
+      - maximals: list[Path]
+      - files: list[Path]
+    """
+    parsed = []
+    for path in files:
+        hosts, ports, combos, had_explicit = _parse_for_overview(path)[:4]
+        items = _build_item_set(hosts, ports, combos, had_explicit)
+        parsed.append((path, items))
+    files_only = [p[0] for p in parsed]
+    item_sets = {p[0]: p[1] for p in parsed}
+
+    cover_map: dict[Path, set[Path]] = {f: set() for f in files_only}
+    for a in files_only:
+        A = item_sets[a]
+        for b in files_only:
+            if a is b:
+                continue
+            if item_sets[b].issubset(A):
+                cover_map[a].add(b)
+
+    maximals = []
+    for a in files_only:
+        A = item_sets[a]
+        if not any((A < item_sets[b]) for b in files_only if b is not a):
+            maximals.append(a)
+
+    return {
+        "files": files_only,
+        "item_sets": item_sets,
+        "cover_map": cover_map,
+        "maximals": maximals,
+    }
+
+
+def render_coverage_data(model: dict) -> None:
+    """Render inclusion/coverage model using the existing table code via analyze_inclusions logic."""
+    # Minimal adapter: if you want to reuse analyze_inclusions' rendering, recompute groups list
+    files = model.get("files", [])
+    if not files:
+        return
+    # Reuse existing analyze_inclusions for identical UX by passing the files again.
+    # (We keep this wrapper for symmetry; direct rendering from model can be added later.)
+    analyze_inclusions(files)
 # ====== Compare hosts/ports across filtered files ======
 def _normalize_combos(hosts, ports_set, combos_map, had_explicit):
     if had_explicit and combos_map:
@@ -1053,36 +1184,6 @@ def _hosts_only_paged_text(path: Path) -> str:
     return f"Hosts-only view: {path.name}\n{body}"
 
 # ---------- Run tools with a Rich spinner ----------
-
-def _sudo_preflight_for_cmd(cmd) -> None:
-    """
-    If the command will use sudo, ensure we prompt clearly and validate credentials
-    *before* showing a spinner. Centralized and backward-compatible.
-    """
-    try:
-        needs_sudo = False
-        if isinstance(cmd, list):
-            needs_sudo = any(str(x) == "sudo" for x in cmd)
-        elif isinstance(cmd, str):
-            needs_sudo = cmd.strip().startswith("sudo ")
-        if needs_sudo:
-            print(fmt_action('This command may prompt for sudo...'))
-        if not needs_sudo:
-            return
-
-        # If we already have cached creds, nothing will be printed.
-        _chk = subprocess.run(["sudo", "-vn"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if _chk.returncode != 0:
-            print(fmt_action("Waiting for sudo password..."))
-            try:
-                subprocess.run(["sudo", "-v"], check=True)
-            except KeyboardInterrupt:
-                raise
-            except subprocess.CalledProcessError as _e:
-                raise subprocess.CalledProcessError(_e.returncode, _e.cmd)
-    except Exception:
-        # Non-fatal; proceed and let the command prompt naturally.
-        pass
 def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[str] = None) -> int:
     disp = cmd if isinstance(cmd, str) else " ".join(str(x) for x in cmd)
     if len(disp) > 120:
@@ -1090,7 +1191,6 @@ def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[
 
 
     # Delay spinner until after sudo password (if needed)
-    _sudo_preflight_for_cmd(cmd)
     try:
         def _cmd_starts_with_sudo(c):
             import os, re
@@ -2531,13 +2631,4 @@ def wizard(
             warn("\nInterrupted — returning to shell.")
 
 if __name__ == "__main__":
-
-    # Optional: enable file logging via env var without changing terminal UX
-    _log_file = os.environ.get("MUNDANE_LOG_FILE")
-    if _log_file and isinstance(_LOG.handlers[0], logging.NullHandler):
-        fh = logging.FileHandler(_log_file, encoding="utf-8")
-        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-        fh.setFormatter(fmt)
-        _LOG.addHandler(fh)
-
     app()
