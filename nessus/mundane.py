@@ -25,6 +25,102 @@ _console_global = Console()
 # Install pretty tracebacks (no try/except; fail loudly if Rich is absent)
 rich_tb_install(show_locals=False)
 
+# ## === Logging setup (Phase 6) ===
+# Controlled via env (no CLI changes):
+#   MUNDANE_LOG    -> path to log file (default: ~/mundane.log)
+#   MUNDANE_DEBUG  -> when set to a truthy value, enables DEBUG (else INFO)
+# Keeps console UX the same; logs go to file only.
+try:
+    from loguru import logger as _log
+    _USE_LOGURU = True
+except Exception:
+    import logging as _logging
+    _USE_LOGURU = False
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() in {"1","true","yes","y","on"}
+
+def _init_logger() -> None:
+    log_path = os.environ.get("MUNDANE_LOG") or str(Path.home() / "mundane.log")
+    debug = _env_truthy("MUNDANE_DEBUG", False)
+    level = "DEBUG" if debug else "INFO"
+    try:
+        if _USE_LOGURU:
+            try:
+                _log.remove()
+            except Exception:
+                pass
+            _log.add(log_path, level=level, rotation="1 MB", retention=3, enqueue=False, backtrace=False, diagnose=False)
+            _log.info("Logger initialized (loguru) at {} with level {}", log_path, level)
+        else:
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+            _logging.basicConfig(
+                filename=log_path,
+                level=_logging.DEBUG if debug else _logging.INFO,
+                format="%(asctime)s %(levelname)s %(message)s",
+            )
+            _logging.info("Logger initialized (stdlib) at %s with level %s", log_path, level)
+    except Exception:
+        pass
+
+_init_logger()
+
+def _log_info(msg: str) -> None:
+    try:
+        if _USE_LOGURU:
+            _log.info(msg)
+        else:
+            _logging.info(msg)
+    except Exception:
+        pass
+
+def _log_debug(msg: str) -> None:
+    try:
+        if _USE_LOGURU:
+            _log.debug(msg)
+        else:
+            _logging.debug(msg)
+    except Exception:
+        pass
+
+def _log_error(msg: str) -> None:
+    try:
+        if _USE_LOGURU:
+            _log.error(msg)
+        else:
+            _logging.error(msg)
+    except Exception:
+        pass
+
+_orig_excepthook = sys.excepthook
+def _ex_hook(exc_type, exc, tb):
+    try:
+        if _USE_LOGURU:
+            _log.opt(exception=(exc_type, exc, tb)).error("Unhandled exception")
+        else:
+            import traceback as _tb
+            _log_error("Unhandled exception:\n" + "".join(_tb.format_exception(exc_type, exc, tb)))
+    except Exception:
+        pass
+    return _orig_excepthook(exc_type, exc, tb)
+
+sys.excepthook = _ex_hook
+
+def log_timing(fn):
+    import time, functools
+    @functools.wraps(fn)
+    def _wrap(*args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            dt = (time.perf_counter() - t0) * 1000.0
+            _log_debug(f"{fn.__name__} took {dt:.1f} ms")
+    return _wrap
+
 # ========== Centralized constants ==========
 RESULTS_ROOT: Path = Path(os.environ.get("NPH_RESULTS_ROOT", "scan_artifacts"))
 REVIEW_PREFIX: str = "REVIEW_COMPLETE-"
@@ -801,6 +897,7 @@ def _render_compare_tables(parsed, host_intersection, host_union, port_intersect
         _console_global.print(groups)
     else:
         info("\nAll filtered files fall into a single identical group.")
+@log_timing
 
 def compare_filtered(files):
     if not files:
@@ -905,6 +1002,7 @@ def _build_item_set(hosts, ports_set, combos_map, had_explicit):
                 items.add(h)
     return items
 
+@log_timing
 
 def analyze_inclusions(files):
     if not files:
@@ -1038,6 +1136,7 @@ def _is_valid_token(tok: str):
         return True, tok, None
 
     return False, None, None
+@log_timing
 
 def _parse_for_overview(path: Path):
     """(hosts, ports:set, combos, had_explicit, malformed_count)"""
@@ -1073,6 +1172,7 @@ def _count_reviewed_in_scan(scan_dir: Path):
         reviewed = list(dict.fromkeys(reviewed))
         reviewed_files += len(reviewed)
     return total_files, reviewed_files
+@log_timing
 
 def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
     header(f"Scan Overview — {scan_dir.name}")
@@ -1100,6 +1200,7 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
         transient=True,
     ) as progress:
         task = progress.add_task("Parsing files for overview...", total=len(all_files) or 1)
+        _log_debug(f"Overview parsing for {len(all_files)} files in {scan_dir}")
         for f in all_files:
             hosts, ports, combos, had_explicit, malformed = _parse_for_overview(f)
             malformed_total += malformed
@@ -1184,9 +1285,11 @@ def _hosts_only_paged_text(path: Path) -> str:
     body = _hosts_only_payload_text(path)
     return f"Hosts-only view: {path.name}\n{body}"
 
+@log_timing
 # ---------- Run tools with a Rich spinner ----------
 def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[str] = None) -> int:
     disp = cmd if isinstance(cmd, str) else " ".join(str(x) for x in cmd)
+    _log_info(f"Executing: {disp}")
     if len(disp) > 120:
         disp = disp[:117] + "..."
 
@@ -1256,18 +1359,23 @@ def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[
         finally:
             raise
     if rc != 0:
+        _log_error(f"Command failed with rc={rc}")
         raise subprocess.CalledProcessError(rc, cmd)
+    _log_info(f"Command succeeded with rc={rc}")
     return rc
 
+@log_timing
 # ---------- Wizard helpers ----------
 def clone_nessus_plugin_hosts(repo_url: str, dest: Path) -> Path:
     """Clone NessusPluginHosts into dest if absent; returns the repo path."""
     if dest.exists() and (dest / "NessusPluginHosts.py").exists():
+        _log_info(f"Repo already present at {dest}")
         ok(f"Repo already present: {dest}")
         return dest
     require_cmd("git")
     dest.parent.mkdir(parents=True, exist_ok=True)
     header("Cloning NessusPluginHosts")
+    _log_info(f"Cloning repo {repo_url} -> {dest}")
     run_command_with_progress(["git", "clone", "--depth", "1", repo_url, str(dest)])
     ok(f"Cloned into {dest}")
     return dest
