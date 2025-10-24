@@ -6,8 +6,6 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict, Counter
 from typing import Any, Optional
-from dataclasses import dataclass
-from typing import List, Dict, Set, Iterable, Tuple
 
 # === Required dependencies (no fallbacks) ===
 import typer
@@ -43,15 +41,6 @@ RESULTS_ROOT: Path = Path(os.environ.get("NPH_RESULTS_ROOT", _DEFAULT_RESULTS_RO
 REVIEW_PREFIX: str = "REVIEW_COMPLETE-"
 
 # ========== Colors & helpers ==========
-
-# ========== Parsing Model (internal) ==========
-@dataclass
-class ParsedHostsPorts:
-    """Canonical representation for a hosts/ports text file."""
-    hosts: List[str]
-    ports: List[str]
-    combos: Dict[str, Set[str]]
-    had_explicit_ports: bool
 NO_COLOR = (os.environ.get("NO_COLOR") is not None) or (os.environ.get("TERM") == "dumb")
 class C:
     RESET  = "" if NO_COLOR else "\u001b[0m"
@@ -533,50 +522,21 @@ def build_results_paths(scan_dir: Path, sev_dir: Path, plugin_filename: str):
     oabase = out_dir / f"run-{ts}"
     return out_dir, oabase
 
-
-# ========== Comparison & Coverage (pure helpers) ==========
-class HostPortSetOps:
-    @staticmethod
-    def normalize_combos(hosts: list[str], ports_set: set[str], combos_map: dict[str, set[str]], had_explicit: bool):
-        if had_explicit and combos_map:
-            items: list[tuple[str, tuple[str, ...]]] = []
-            for h in hosts:
-                ps = combos_map.get(h, set())
-                items.append((h, tuple(sorted(ps, key=lambda x: int(x)))))
-            return tuple(items)
-        assumed = tuple(sorted((h, tuple(sorted(ports_set, key=lambda x: int(x)))) for h in hosts))
-        return assumed
-
-    @staticmethod
-    def build_item_set(hosts: list[str], ports_set: set[str], combos_map: dict[str, set[str]], had_explicit: bool) -> set[str]:
-        items: set[str] = set()
-        if had_explicit:
-            any_ports = any(bool(v) for v in combos_map.values())
-            if any_ports:
-                for h in hosts:
-                    ps = combos_map.get(h, set())
-                    if ps:
-                        for p in ps:
-                            items.add(f"{h}:{p}")
-                    else:
-                        items.add(h)
-            else:
-                for h in hosts:
-                    items.add(h)
-        else:
-            if ports_set:
-                for h in hosts:
-                    for p in ports_set:
-                        items.add(f"{h}:{p}")
-            else:
-                for h in hosts:
-                    items.add(h)
-        return items
 # ====== Compare hosts/ports across filtered files ======
 def _normalize_combos(hosts, ports_set, combos_map, had_explicit):
-    return HostPortSetOps.normalize_combos(hosts, ports_set, combos_map, had_explicit)
+    if had_explicit and combos_map:
+        items = []
+        for h in hosts:
+            ps = combos_map.get(h, set())
+            items.append((h, tuple(sorted(ps, key=lambda x: int(x)))))
+        return tuple(items)
+    assumed = tuple(sorted(
+        (h, tuple(sorted(ports_set, key=lambda x: int(x))))
+        for h in hosts
+    ))
+    return assumed
 
-
+# ---------- Rich style helpers ----------
 def _severity_style(label: str) -> str:
     l = label.strip().lower()
     if "critical" in l: return "red"
@@ -780,8 +740,38 @@ def compare_filtered(files):
 
 # ====== Superset / coverage analysis across filtered files ======
 def _build_item_set(hosts, ports_set, combos_map, had_explicit):
-    """Compatibility wrapper to pure helper; keeps callers unchanged."""
-    return HostPortSetOps.build_item_set(hosts, ports_set, combos_map, had_explicit)
+    """
+    Return a set of atomic "items" for inclusion checks.
+    Items are:
+      - 'host:port' when a host has explicit ports (or implicit ports when had_explicit is False)
+      - 'host'      when there are no ports at all for that host/file
+    """
+    items = set()
+    if had_explicit:
+        any_ports = any(bool(v) for v in combos_map.values())
+        if any_ports:
+            for h in hosts:
+                ps = combos_map.get(h, set())
+                if ps:
+                    for p in ps:
+                        items.add(f"{h}:{p}")
+                else:
+                    # Host present but no explicit ports for it — treat as bare host
+                    items.add(h)
+        else:
+            # Defensive: had_explicit True but no ports recorded → fall back to bare hosts
+            for h in hosts:
+                items.add(h)
+    else:
+        # No explicit combos; interpret as Cartesian product hosts x ports_set, or bare hosts if no ports
+        if ports_set:
+            for h in hosts:
+                for p in ports_set:
+                    items.add(f"{h}:{p}")
+        else:
+            for h in hosts:
+                items.add(h)
+    return items
 
 
 def analyze_inclusions(files):
