@@ -5,7 +5,8 @@ import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, types, math
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict, Counter
-from typing import Any, Optional
+from typing import Any, Optional, Callable
+from dataclasses import dataclass
 
 # === Required dependencies (no fallbacks) ===
 import typer
@@ -1422,7 +1423,65 @@ def render_placeholders(template: str, mapping: dict) -> str:
         s = s.replace(k, str(v))
     return s
 
+# ---------- Tool Template Registry (Phase 5 foundation) ----------
+@dataclass(frozen=True)
+class ToolSpec:
+    name: str
+    builder: Callable[[dict], tuple[Any, dict]]
+
+# Minimal helper to expand {PLACEHOLDER} in strings (for future templated commands)
+def expand_placeholders(s: str, mapping: dict) -> str:
+    for k, v in mapping.items():
+        s = s.replace("{" + k + "}", str(v))
+    return s
+
+def get_tool_spec(name: str) -> ToolSpec | None:
+    return TOOL_REGISTRY.get(name)
+
+def _registry_build_nmap(ctx: dict):
+    # Delegate to existing builder to preserve behavior
+    cmd = build_nmap_cmd(
+        ctx.get("udp", False),
+        ctx.get("nse_option"),
+        ctx["ips_file"],
+        ctx.get("ports_str", ""),
+        ctx.get("use_sudo", False),
+        ctx["oabase"],
+    )
+    return cmd, {}
+
+def _registry_build_netexec(ctx: dict):
+    cmd, log_path, relay_path = build_netexec_cmd(
+        ctx.get("exec_bin", "nxc"),
+        ctx.get("protocol", "smb"),
+        ctx["ips_file"],
+        ctx["oabase"],
+    )
+    return cmd, {"log_path": log_path, "relay_path": relay_path}
+
+# Current tools wired through registry (behavior identical)
+TOOL_REGISTRY: dict[str, ToolSpec] = {
+    "nmap": ToolSpec(name="nmap", builder=_registry_build_nmap),
+    "netexec": ToolSpec(name="netexec", builder=_registry_build_netexec),
+    # 'custom' intentionally not included — it's free-form
+}
+
 # ============================================================
+
+# ---------- Registry adapters (non-breaking) ----------
+def build_tool_command(tool_name: str, ctx: dict):
+    """Return (cmd, meta) for a tool, routed via the registry.
+    Falls back to legacy builders to preserve behavior if registry missing entries.
+    """
+    spec = get_tool_spec(tool_name) if 'TOOL_REGISTRY' in globals() else None
+    if spec is not None:
+        return spec.builder(ctx)
+    # Legacy fallback paths (identical to previous behavior)
+    if tool_name == "nmap":
+        return _registry_build_nmap(ctx)
+    if tool_name == "netexec":
+        return _registry_build_netexec(ctx)
+    raise ValueError(f"Unknown tool: {tool_name}")
 
 def main(args):
     use_sudo = root_or_sudo_available()
