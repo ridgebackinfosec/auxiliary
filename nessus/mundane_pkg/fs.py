@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, re, shutil
+import re, shutil
 from pathlib import Path
 from datetime import datetime
 from rich.progress import Progress, SpinnerColumn, TextColumn as ProgTextColumn, TimeElapsedColumn
@@ -79,50 +79,9 @@ def pretty_severity_label(name: str) -> str:
 def list_files(p: Path):
     return sorted([f for f in p.iterdir() if f.is_file()], key=lambda f: f.name)
 
-def _default_page_size() -> int:
+def default_page_size() -> int:
     try:
         h = shutil.get_terminal_size((80, 24)).lines
         return max(8, h - 10)
     except Exception:
         return 12
-
-
-    if total_pages == 1:
-        print(f"\nPage 1/1 — lines 1-{len(lines)} of {len(lines)}")
-        print("─" * 80)
-        print("\n".join(lines))
-        print("─" * 80)
-        return
-
-    idx = 0
-    while True:
-        start = idx * ps
-        end = start + ps
-        chunk = lines[start:end]
-        print(f"\nPage {idx+1}/{total_pages} — lines {start+1}-{min(end, len(lines))} of {len(lines)}")
-        print("─" * 80)
-        print("\n".join(chunk))
-        print("─" * 80)
-        print(fmt_action("[N] Next page / [P] Prev page / [B] Back"))
-        try:
-            ans = input("Action: ").strip().lower()
-        except KeyboardInterrupt:
-            warn("\nInterrupted — returning.")
-            return
-        if ans in ("b", "back", "q", "x"):
-            return
-        if ans in ("n", "next"):
-            if idx + 1 < total_pages:
-                idx += 1
-            else:
-                warn("Already at last page.")
-            continue
-        if ans in ("p", "prev", "previous"):
-            if idx > 0:
-                idx -= 1
-            else:
-                warn("Already at first page.")
-            continue
-        if ans == "":
-            return
-        warn("Use N (next), P (prev), or B (back).")

@@ -1,6 +1,11 @@
 import os, sys
 from pathlib import Path
 
+# ## === Logging setup (Phase 6) ===
+# Controlled via env (no CLI changes):
+#   MUNDANE_LOG    -> path to log file (default: ~/mundane.log)
+#   MUNDANE_DEBUG  -> when set to a truthy value, enables DEBUG (else INFO)
+# Keeps console UX the same; logs go to file only.
 try:
     from loguru import logger as _log
     _USE_LOGURU = True
@@ -8,33 +13,27 @@ except Exception:
     import logging as _logging
     _USE_LOGURU = False
 
-def _env_truthy(name: str, default: bool = False) -> bool:
+def env_truthy(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
     if v is None:
         return default
     return v.strip().lower() in {"1","true","yes","y","on"}
 
-def _init_logger() -> None:
+def init_logger() -> None:
     global _USE_LOGURU
     log_path = os.environ.get("MUNDANE_LOG") or str(Path.home() / "mundane.log")
-    debug = _env_truthy("MUNDANE_DEBUG", False)
+    debug = env_truthy("MUNDANE_DEBUG", False)
     level = "DEBUG" if debug else "INFO"
     try:
-        try:
-            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
         if _USE_LOGURU:
             try:
                 _log.remove()
             except Exception:
                 pass
-            try:
-                _log.add(log_path, level=level, rotation="1 MB", retention=3, enqueue=False, backtrace=False, diagnose=False)
-                _log.info("Logger initialized (loguru) at {} with level {}", log_path, level)
-            except Exception:
-                _USE_LOGURU = False
-        if not _USE_LOGURU:
+            _log.add(log_path, level=level, rotation="1 MB", retention=3, enqueue=False, backtrace=False, diagnose=False)
+            _log.info("Logger initialized (loguru) at {} with level {}", log_path, level)
+        else:
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
             _logging.basicConfig(
                 filename=log_path,
                 level=_logging.DEBUG if debug else _logging.INFO,
@@ -44,9 +43,9 @@ def _init_logger() -> None:
     except Exception:
         pass
 
-_init_logger()
+init_logger()
 
-def _log_info(msg: str) -> None:
+def log_info(msg: str) -> None:
     try:
         if _USE_LOGURU:
             _log.info(msg)
@@ -55,7 +54,7 @@ def _log_info(msg: str) -> None:
     except Exception:
         pass
 
-def _log_debug(msg: str) -> None:
+def log_debug(msg: str) -> None:
     try:
         if _USE_LOGURU:
             _log.debug(msg)
@@ -64,7 +63,7 @@ def _log_debug(msg: str) -> None:
     except Exception:
         pass
 
-def _log_error(msg: str) -> None:
+def log_error(msg: str) -> None:
     try:
         if _USE_LOGURU:
             _log.error(msg)
@@ -74,17 +73,18 @@ def _log_error(msg: str) -> None:
         pass
 
 _orig_excepthook = sys.excepthook
-def _ex_hook(exc_type, exc, tb):
+def ex_hook(exc_type, exc, tb):
     try:
         if _USE_LOGURU:
             _log.opt(exception=(exc_type, exc, tb)).error("Unhandled exception")
         else:
             import traceback as _tb
-            _log_error("Unhandled exception:\n" + "".join(_tb.format_exception(exc_type, exc, tb)))
+            log_error("Unhandled exception:\n" + "".join(_tb.format_exception(exc_type, exc, tb)))
     except Exception:
         pass
     return _orig_excepthook(exc_type, exc, tb)
-sys.excepthook = _ex_hook
+
+sys.excepthook = ex_hook
 
 def log_timing(fn):
     import time, functools
@@ -95,9 +95,9 @@ def log_timing(fn):
             return fn(*args, **kwargs)
         finally:
             dt = (time.perf_counter() - t0) * 1000.0
-            _log_debug(f"{fn.__name__} took {dt:.1f} ms")
+            log_debug(f"{fn.__name__} took {dt:.1f} ms")
     return _wrap
 
 # small public wrapper for __init__.py
 def setup_logging() -> None:
-    _init_logger()
+    init_logger()

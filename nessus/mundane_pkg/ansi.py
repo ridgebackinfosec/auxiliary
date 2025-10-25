@@ -1,5 +1,6 @@
 import os
 
+# ========== Colors & helpers ==========
 NO_COLOR = (os.environ.get("NO_COLOR") is not None) or (os.environ.get("TERM") == "dumb")
 
 class C:

@@ -13,12 +13,11 @@ from mundane_pkg import (
     run_command_with_progress, clone_nessus_plugin_hosts,
 
     # parsing
-    _is_ipv6, _is_ipv4, _is_valid_token,
-    _build_item_set, _normalize_combos, _parse_for_overview,
+    build_item_set, normalize_combos, parse_for_overview,
 
     # constants
     RESULTS_ROOT, PLUGIN_DETAILS_BASE,
-    NETEXEC_PROTOCOLS, NSE_PROFILES,
+    NSE_PROFILES,
 
     # ansi / labels
     C, header, ok, warn, err, info,
@@ -27,7 +26,7 @@ from mundane_pkg import (
     # render:
     render_scan_table, render_severity_table, render_file_list_table,
     render_compare_tables, render_actions_footer, show_actions_help,
-    show_reviewed_help, menu_pager, pretty_severity_label, list_files, _default_page_size,
+    show_reviewed_help, menu_pager, pretty_severity_label, list_files, default_page_size,
 
     # fs:
     list_dirs, read_text_lines, safe_print_file, build_results_paths,
@@ -40,7 +39,7 @@ from mundane_pkg import (
     command_review_menu, copy_to_clipboard,
 )
 
-import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, types, math
+import sys, re, random, shutil, tempfile, subprocess, ipaddress, types, math
 from pathlib import Path
 from collections import defaultdict, Counter
 from typing import Any, Optional
@@ -299,7 +298,7 @@ def compare_filtered(files):
 
     host_sigs  = [tuple(sorted(h)) for _, h, _, _, _ in parsed]
     port_sigs  = [tuple(sorted(p, key=lambda x: int(x))) for _, _, p, _, _ in parsed]
-    combo_sigs = [_normalize_combos(h, p, c, e) for _, h, p, c, e in parsed]
+    combo_sigs = [normalize_combos(h, p, c, e) for _, h, p, c, e in parsed]
 
     same_hosts  = all(sig == host_sigs[0] for sig in host_sigs) if host_sigs else True
     same_ports  = all(sig == port_sigs[0] for sig in port_sigs) if port_sigs else True
@@ -358,7 +357,7 @@ def analyze_inclusions(files):
         for f in files:
             hosts, ports_set, combos, had_explicit = parse_file_hosts_ports_detailed(f)
             parsed.append((f, hosts, ports_set, combos, had_explicit))
-            item_sets[f] = _build_item_set(hosts, ports_set, combos, had_explicit)
+            item_sets[f] = build_item_set(hosts, ports_set, combos, had_explicit)
             progress.advance(task)
 
     # Build coverage map: for each file, which others does it fully include?
@@ -479,7 +478,7 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
     ) as progress:
         task = progress.add_task("Parsing files for overview...", total=len(all_files) or 1)
         for f in all_files:
-            hosts, ports, combos, had_explicit, malformed = _parse_for_overview(f)
+            hosts, ports, combos, had_explicit, malformed = parse_for_overview(f)
             malformed_total += malformed
             if not hosts:
                 empties += 1
@@ -495,7 +494,7 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = 5):
                     pass
             for p in ports:
                 ports_counter[p] += 1
-            sig = _normalize_combos(hosts, ports, combos, had_explicit)
+            sig = normalize_combos(hosts, ports, combos, had_explicit)
             combo_sig_counter[sig] += 1
             progress.advance(task)
 
@@ -673,7 +672,7 @@ def main(args):
                 group_filter = None
                 sort_mode = "name"
                 file_parse_cache = {}
-                page_size = _default_page_size()
+                page_size = default_page_size()
                 page_idx = 0
 
                 def get_counts_for(path: Path):
@@ -1174,7 +1173,7 @@ def main(args):
             group_filter = None
             sort_mode = "name"
             file_parse_cache = {}
-            page_size = _default_page_size()
+            page_size = default_page_size()
             page_idx = 0
 
             def get_counts_for_msf(path: Path):

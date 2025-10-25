@@ -9,10 +9,11 @@ from pathlib import Path
 import math
 
 from .ansi import (
-    info
+    info, fmt_action, warn
 )
 
 from .fs import list_files, _default_page_size, pretty_severity_label
+from .logging_setup import log_timing
 
 _console_global = Console()
 
@@ -32,6 +33,46 @@ def menu_pager(text: str, page_size: Optional[int] = None):
     ps = page_size or _default_page_size()
     total_pages = max(1, math.ceil(len(lines) / ps))
 
+    if total_pages == 1:
+        print(f"\nPage 1/1 — lines 1-{len(lines)} of {len(lines)}")
+        print("─" * 80)
+        print("\n".join(lines))
+        print("─" * 80)
+        return
+
+    idx = 0
+    while True:
+        start = idx * ps
+        end = start + ps
+        chunk = lines[start:end]
+        print(f"\nPage {idx+1}/{total_pages} — lines {start+1}-{min(end, len(lines))} of {len(lines)}")
+        print("─" * 80)
+        print("\n".join(chunk))
+        print("─" * 80)
+        print(fmt_action("[N] Next page / [P] Prev page / [B] Back"))
+        try:
+            ans = input("Action: ").strip().lower()
+        except KeyboardInterrupt:
+            warn("\nInterrupted — returning.")
+            return
+        if ans in ("b", "back", "q", "x"):
+            return
+        if ans in ("n", "next"):
+            if idx + 1 < total_pages:
+                idx += 1
+            else:
+                warn("Already at last page.")
+            continue
+        if ans in ("p", "prev", "previous"):
+            if idx > 0:
+                idx -= 1
+            else:
+                warn("Already at first page.")
+            continue
+        if ans == "":
+            return
+        warn("Use N (next), P (prev), or B (back).")
+
 def render_scan_table(scans):
     table = Table(title=None, box=box.SIMPLE, show_lines=False, pad_edge=False)
     table.add_column("#", justify="right", no_wrap=True)
@@ -50,24 +91,24 @@ def render_severity_table(severities, msf_summary=None):
     table.add_column("Total", justify="right", no_wrap=True)
 
     for i, sd in enumerate(severities, 1):
-        unrev, rev, tot = _count_severity_files(sd)
+        unrev, rev, tot = count_severity_files(sd)
         label = pretty_severity_label(sd.name)
         table.add_row(
             str(i),
-            _rich_severity_cell(label),
-            _rich_unreviewed_cell(unrev, tot),
-            _rich_reviewed_cell(rev, tot),
-            _rich_total_cell(tot),
+            rich_severity_cell(label),
+            rich_unreviewed_cell(unrev, tot),
+            rich_reviewed_cell(rev, tot),
+            rich_total_cell(tot),
         )
 
     if msf_summary:
         idx, unrev, rev, tot = msf_summary
         table.add_row(
             str(idx),
-            _rich_severity_cell("Metasploit Module"),
-            _rich_unreviewed_cell(unrev, tot),
-            _rich_reviewed_cell(rev, tot),
-            _rich_total_cell(tot),
+            rich_severity_cell("Metasploit Module"),
+            rich_unreviewed_cell(unrev, tot),
+            rich_reviewed_cell(rev, tot),
+            rich_total_cell(tot),
         )
 
     _console_global.print(table)
@@ -123,72 +164,33 @@ def render_compare_tables(parsed, host_intersection, host_union, port_intersecti
         _console_global.print(groups)
     else:
         info("\nAll filtered files fall into a single identical group.")
+@log_timing
 
 def render_actions_footer(*, group_applied: bool, candidates_count: int, sort_mode: str, can_next: bool, can_prev: bool):
     """Two-row, two-column action footer."""
-    left_row1  = _join_actions_texts([
-        _key_text("Enter", "Open first match"),
-        _key_text("B", "Back"),
-        _key_text("?", "Help"),
+    left_row1  = join_actions_texts([
+        key_text("Enter", "Open first match"),
+        key_text("B", "Back"),
+        key_text("?", "Help"),
     ])
-    right_row1 = _join_actions_texts([
-        _key_text("F", "Set filter"),
-        _key_text("C", "Clear filter"),
-        _key_text("O", f"Toggle sort (now: {'Hosts' if sort_mode=='hosts' else 'Name'})"),
+    right_row1 = join_actions_texts([
+        key_text("F", "Set filter"),
+        key_text("C", "Clear filter"),
+        key_text("O", f"Toggle sort (now: {'Hosts' if sort_mode=='hosts' else 'Name'})"),
     ])
-    left_row2  = _join_actions_texts([
-        _key_text("R", "Reviewed files"),
-        _key_text("H", "Compare"),
-        _key_text("I", "Superset analysis"),
-        _key_text("M", f"Mark ALL filtered as REVIEW_COMPLETE ({candidates_count})"),
+    left_row2  = join_actions_texts([
+        key_text("R", "Reviewed files"),
+        key_text("H", "Compare"),
+        key_text("I", "Superset analysis"),
+        key_text("M", f"Mark ALL filtered as REVIEW_COMPLETE ({candidates_count})"),
     ])
     right_items = [
-        _key_text("N", "Next page", enabled=can_next),
-        _key_text("P", "Prev page", enabled=can_prev),
+        key_text("N", "Next page", enabled=can_next),
+        key_text("P", "Prev page", enabled=can_prev),
     ]
     if group_applied:
-        right_items.append(_key_text("X", "Clear group"))
-    right_row2 = _join_actions_texts(right_items)
-
-def show_actions_help(*, group_applied: bool, candidates_count: int, sort_mode: str, can_next: bool, can_prev: bool):
-    """Render a categorized help panel for main/MSF file lists."""
-    t = Table.grid(padding=(0,1))
-    t.add_row(Text("Navigation", style="bold"), _key_text("Enter", "Open first match"),
-              _key_text("N", "Next page", enabled=can_next), _key_text("P", "Prev page", enabled=can_prev), _key_text("B", "Back"))
-    t.add_row(Text("Filtering", style="bold"), _key_text("F", "Set filter"), _key_text("C", "Clear filter"))
-    t.add_row(Text("Sorting", style="bold"), _key_text("O", f"Toggle sort (now: {'Hosts' if sort_mode=='hosts' else 'Name'})"))
-    t.add_row(Text("Bulk review", style="bold"), _key_text("M", f"Mark ALL filtered as REVIEW_COMPLETE ({candidates_count})"))
-    t.add_row(Text("Analysis", style="bold"),
-              _key_text("H", "Compare hosts/ports (identical)"),
-              _key_text("I", "Superset / coverage groups"))
-    if group_applied:
-        t.add_row(Text("Groups", style="bold"), _key_text("X", "Clear group filter"))
-    panel = Panel(t, title="Actions", border_style="cyan")
-    _console_global.print(panel)
-
-def show_reviewed_help():
-    t = Table.grid(padding=(0,1))
-    t.add_row(Text("Filtering", style="bold"), _key_text("F", "Set filter"), _key_text("C", "Clear filter"))
-    t.add_row(Text("Exit", style="bold"), _key_text("B", "Back"))
-    panel = Panel(t, title="Reviewed Files — Actions", border_style="cyan")
-    _console_global.print(panel)
-
-def _key_text(key: str, label: str, *, enabled: bool = True) -> Text:
-    t = Text()
-    t.append(f"[{key}] ", style="cyan")
-    t.append(label, style=None if enabled else "dim")
-    if not enabled:
-        t.stylize("dim")
-    return t
-
-def _join_actions_texts(items: list[Text]) -> Text:
-    out = Text()
-    for i, it in enumerate(items):
-        if i:
-            out.append(" / ", style="dim")
-        out.append(it)
-    return out
-
+        right_items.append(key_text("X", "Clear group"))
+    right_row2 = join_actions_texts(right_items)
 
     grid = Table.grid(expand=True, padding=(0, 1))
     grid.add_column(ratio=1)
@@ -197,7 +199,46 @@ def _join_actions_texts(items: list[Text]) -> Text:
     grid.add_row(left_row2, right_row2)
     _console_global.print(grid)
 
-def _count_severity_files(d: Path):
+def show_actions_help(*, group_applied: bool, candidates_count: int, sort_mode: str, can_next: bool, can_prev: bool):
+    """Render a categorized help panel for main/MSF file lists."""
+    t = Table.grid(padding=(0,1))
+    t.add_row(Text("Navigation", style="bold"), key_text("Enter", "Open first match"),
+              key_text("N", "Next page", enabled=can_next), key_text("P", "Prev page", enabled=can_prev), key_text("B", "Back"))
+    t.add_row(Text("Filtering", style="bold"), key_text("F", "Set filter"), key_text("C", "Clear filter"))
+    t.add_row(Text("Sorting", style="bold"), key_text("O", f"Toggle sort (now: {'Hosts' if sort_mode=='hosts' else 'Name'})"))
+    t.add_row(Text("Bulk review", style="bold"), key_text("M", f"Mark ALL filtered as REVIEW_COMPLETE ({candidates_count})"))
+    t.add_row(Text("Analysis", style="bold"),
+              key_text("H", "Compare hosts/ports (identical)"),
+              key_text("I", "Superset / coverage groups"))
+    if group_applied:
+        t.add_row(Text("Groups", style="bold"), key_text("X", "Clear group filter"))
+    panel = Panel(t, title="Actions", border_style="cyan")
+    _console_global.print(panel)
+
+def show_reviewed_help():
+    t = Table.grid(padding=(0,1))
+    t.add_row(Text("Filtering", style="bold"), key_text("F", "Set filter"), key_text("C", "Clear filter"))
+    t.add_row(Text("Exit", style="bold"), key_text("B", "Back"))
+    panel = Panel(t, title="Reviewed Files — Actions", border_style="cyan")
+    _console_global.print(panel)
+
+def key_text(key: str, label: str, *, enabled: bool = True) -> Text:
+    t = Text()
+    t.append(f"[{key}] ", style="cyan")
+    t.append(label, style=None if enabled else "dim")
+    if not enabled:
+        t.stylize("dim")
+    return t
+
+def join_actions_texts(items: list[Text]) -> Text:
+    out = Text()
+    for i, it in enumerate(items):
+        if i:
+            out.append(" / ", style="dim")
+        out.append(it)
+    return out
+
+def count_severity_files(d: Path):
     files = [f for f in list_files(d) if f.suffix.lower() == ".txt"]
     reviewed = [f for f in files if f.name.lower().startswith(("review_complete", "review-complete"))]
     reviewed += [f for f in files if f.name.lower().startswith(("review_complete-", "review-complete-"))]
@@ -205,13 +246,13 @@ def _count_severity_files(d: Path):
     unreviewed = [f for f in files if f not in reviewed]
     return len(unreviewed), len(reviewed), len(files)
 
-def _rich_severity_cell(label: str) -> Any:
+def rich_severity_cell(label: str) -> Any:
     t = Text(label)
     t.stylize("bold")
-    t.stylize(_severity_style(label))
+    t.stylize(severity_style(label))
     return t
 
-def _rich_unreviewed_cell(n: int, total: int) -> Any:
+def rich_unreviewed_cell(n: int, total: int) -> Any:
     pct = 0
     if total:
         pct = round((n / total) * 100)
@@ -224,7 +265,7 @@ def _rich_unreviewed_cell(n: int, total: int) -> Any:
         t.stylize("red")
     return t
 
-def _rich_reviewed_cell(n: int, total: int) -> Any:
+def rich_reviewed_cell(n: int, total: int) -> Any:
     pct = 0
     if total:
         pct = round((n / total) * 100)
@@ -232,12 +273,12 @@ def _rich_reviewed_cell(n: int, total: int) -> Any:
     t.stylize("magenta")
     return t
 
-def _rich_total_cell(n: int) -> Any:
+def rich_total_cell(n: int) -> Any:
     t = Text(str(n))
     t.stylize("bold")
     return t
 
-def _severity_style(label: str) -> str:
+def severity_style(label: str) -> str:
     l = label.strip().lower()
     if "critical" in l: return "red"
     if "high"     in l: return "yellow"

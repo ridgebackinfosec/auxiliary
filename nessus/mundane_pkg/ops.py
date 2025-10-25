@@ -8,13 +8,16 @@ from rich.console import Console
 
 # --- in mundane_pkg/ops.py ---
 from .ansi import header, ok, err, C
+from .logging_setup import log_timing, log_info, log_error
 
 # Create a console for the interactive flow
 _console_global = Console()
 
+@log_timing
 # ---------- Run tools with a Rich spinner ----------
 def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[str] = None) -> int:
     disp = cmd if isinstance(cmd, str) else " ".join(str(x) for x in cmd)
+    log_info(f"Executing: {disp}")
     if len(disp) > 120:
         disp = disp[:117] + "..."
 
@@ -84,29 +87,34 @@ def run_command_with_progress(cmd, *, shell: bool = False, executable: Optional[
         finally:
             raise
     if rc != 0:
+        log_error(f"Command failed with rc={rc}")
         raise subprocess.CalledProcessError(rc, cmd)
+    log_info(f"Command succeeded with rc={rc}")
     return rc
 
+@log_timing
+
 # ---------- Wizard helpers ----------
+@log_timing
 def clone_nessus_plugin_hosts(repo_url: str, dest: Path) -> Path:
     """Clone NessusPluginHosts into dest if absent; returns the repo path."""
     if dest.exists() and (dest / "NessusPluginHosts.py").exists():
+        log_info(f"Repo already present at {dest}")
         ok(f"Repo already present: {dest}")
         return dest
     require_cmd("git")
     dest.parent.mkdir(parents=True, exist_ok=True)
     header("Cloning NessusPluginHosts")
+    log_info(f"Cloning repo {repo_url} -> {dest}")
     run_command_with_progress(["git", "clone", "--depth", "1", repo_url, str(dest)])
     ok(f"Cloned into {dest}")
     return dest
 
 def root_or_sudo_available() -> bool:
-    """Return True if we're root on *nix or 'sudo' is available on PATH."""
     try:
         if os.name != "nt" and os.geteuid() == 0:
             return True
     except AttributeError:
-        # os.geteuid not present on Windows; fall back to sudo check
         pass
     return shutil.which("sudo") is not None
 
