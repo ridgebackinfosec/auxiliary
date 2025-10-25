@@ -1,17 +1,15 @@
 from __future__ import annotations
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.prompt import Confirm
 from rich import box
 from rich.text import Text
 from pathlib import Path
-import math, re, shutil
+import math
 
 from .ansi import (
-    C, header, ok, warn, err, info,
-    fmt_action, fmt_reviewed, cyan_label, colorize_severity_label,
+    info
 )
 
 from .fs import list_files, _default_page_size, pretty_severity_label

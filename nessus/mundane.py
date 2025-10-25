@@ -17,7 +17,7 @@ from mundane_pkg import (
     _build_item_set, _normalize_combos, _parse_for_overview,
 
     # constants
-    RESULTS_ROOT, REVIEW_PREFIX, PLUGIN_DETAILS_BASE,
+    RESULTS_ROOT, PLUGIN_DETAILS_BASE,
     NETEXEC_PROTOCOLS, NSE_PROFILES,
 
     # ansi / labels
@@ -31,12 +31,17 @@ from mundane_pkg import (
 
     # fs:
     list_dirs, read_text_lines, safe_print_file, build_results_paths,
-    is_review_complete, rename_review_complete,
+    rename_review_complete,
+
+    #tools:
+    build_nmap_cmd, build_netexec_cmd,
+    choose_tool, choose_netexec_protocol,
+    custom_command_help, render_placeholders,
+    command_review_menu, copy_to_clipboard,
 )
 
 import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, types, math
 from pathlib import Path
-from datetime import datetime
 from collections import defaultdict, Counter
 from typing import Any, Optional
 
@@ -44,12 +49,9 @@ from typing import Any, Optional
 import typer
 from rich.console import Console
 from rich.table import Table
-from rich.panel import Panel
 from rich.traceback import install as rich_tb_install
 from rich import box
-from rich.text import Text
 from rich.progress import Progress, SpinnerColumn, TextColumn as ProgTextColumn, TimeElapsedColumn
-import pyperclip  # required
 
 # Create a console for the interactive flow
 _console_global = Console()
@@ -186,36 +188,6 @@ def write_work_files(workdir: Path, hosts, ports_str: str, udp: bool):
                 f.write(f"{h}:{ports_str}\n")
     return tcp_ips, udp_ips, tcp_sockets
 
-def build_nmap_cmd(udp, nse_option, ips_file, ports_str, use_sudo, oabase: Path):
-    cmd = []
-    if use_sudo:
-        cmd.append("sudo")
-    cmd += ["nmap", "-A"]
-    if nse_option:
-        cmd.append(nse_option)
-    cmd += ["-iL", str(ips_file)]
-    if udp:
-        cmd.append("-sU")
-    if ports_str:
-        cmd += ["-p", ports_str]
-    cmd += ["-oA", str(oabase)]
-    return cmd
-
-def build_netexec_cmd(exec_bin: str, protocol: str, ips_file: Path, oabase: Path):
-    log_path = f"{str(oabase)}.nxc.{protocol}.log"
-    relay_path = None
-    if protocol == "smb":
-        relay_path = f"{str(oabase)}.SMB_Signing_not_required_targets.txt"
-        cmd = [
-            exec_bin, "smb", str(ips_file),
-            "--gen-relay-list", relay_path,
-            "--shares",
-            "--log", log_path
-        ]
-    else:
-        cmd = [exec_bin, protocol, str(ips_file), "--log", log_path]
-    return cmd, log_path, relay_path
-
 # ---------- Plugin details link helpers ----------
 PLUGIN_DETAILS_BASE = "https://www.tenable.com/plugins/nessus/"
 
@@ -232,57 +204,6 @@ def _plugin_details_line(path: Path) -> Optional[str]:
     if pid:
         return f"Plugin Details: {PLUGIN_DETAILS_BASE}{pid}"
     return None
-
-def copy_to_clipboard(s: str) -> tuple:
-    """Clipboard via pyperclip; OS tool fallback if runtime environment blocks it."""
-    try:
-        pyperclip.copy(s)
-        return True, 'Copied using pyperclip.'
-    except Exception:
-        enc = s.encode('utf-8')
-        try:
-            if sys.platform.startswith('darwin') and shutil.which('pbcopy'):
-                subprocess.run(['pbcopy'], input=enc, check=True)
-                return True, 'Copied using pbcopy.'
-            if os.name == 'nt' and shutil.which('clip'):
-                subprocess.run(['clip'], input=enc, check=True)
-                return True, 'Copied using clip.'
-            for tool, args in (
-                ('xclip', ['xclip', '-selection', 'clipboard']),
-                ('wl-copy', ['wl-copy']),
-                ('xsel', ['xsel', '--clipboard', '--input']),
-            ):
-                if shutil.which(tool):
-                    subprocess.run(args, input=enc, check=True)
-                    return True, f'Copied using {tool}.'
-        except subprocess.CalledProcessError as e:
-            return False, f'Clipboard tool failed (exit {e.returncode}).'
-        except Exception as e:
-            return False, f'Clipboard error: {e}'
-    return False, 'No suitable clipboard method found.'
-
-def command_review_menu(cmd_list_or_str):
-    """Display a small menu: run / copy / cancel."""
-    header("Command Review")
-    cmd_str = cmd_list_or_str if isinstance(cmd_list_or_str, str) else " ".join(cmd_list_or_str)
-    print(cmd_str)
-    print()
-    print(fmt_action("[1] Run now"))
-    print(fmt_action("[2] Copy command to clipboard (don’t run)"))
-    print(fmt_action("[3] Cancel"))
-    while True:
-        try:
-            choice = input("Choose: ").strip()
-        except KeyboardInterrupt:
-            warn("\nInterrupted — returning to file menu.")
-            return "cancel"
-        if choice in ("1", "r", "run"):
-            return "run"
-        if choice in ("2", "c", "copy"):
-            return "copy"
-        if choice in ("3", "x", "cancel"):
-            return "cancel"
-        warn("Enter 1, 2, or 3.")
 
 def _color_unreviewed(n: int) -> str:
     if n == 0: return f"{C.GREEN}{n}{C.RESET}"
@@ -654,71 +575,6 @@ def footer_line(*, group_applied: bool, candidates_count: int, can_next: bool, c
     if nav:
         main = main + "  |  " + nav
     return main
-
-# ========== Tool selection ==========
-def choose_tool():
-    header("Choose a tool")
-    print("[1] nmap")
-    print("[2] netexec — multi-protocol")
-    print("[3] Custom command (advanced)")
-    print(fmt_action("[B] Back"))
-    while True:
-        try:
-            ans = input("Choose: ").strip().lower()
-        except KeyboardInterrupt:
-            warn("\nInterrupted — returning to file menu.")
-            return None
-        if ans in ("b", "back", ""):
-            return None if ans else "nmap"
-        if ans.isdigit():
-            i = int(ans)
-            if i == 1: return "nmap"
-            if i == 2: return "netexec"
-            if i == 3: return "custom"
-        warn("Invalid choice.")
-
-NETEXEC_PROTOCOLS = ["mssql","smb","ftp","ldap","nfs","rdp","ssh","vnc","winrm","wmi"]
-
-def choose_netexec_protocol():
-    header("NetExec: choose protocol")
-    for i, p in enumerate(NETEXEC_PROTOCOLS, 1):
-        print(f"[{i}] {p}")
-    print(fmt_action("[B] Back"))
-    print("(Press Enter for 'smb')")
-    while True:
-        try:
-            ans = input("Choose protocol: ").strip().lower()
-        except KeyboardInterrupt:
-            warn("\nInterrupted — returning to file menu.")
-            return None
-        if ans == "":
-            return "smb"
-        if ans in ("b","back"):
-            return None
-        if ans.isdigit():
-            idx = int(ans)
-            if 1 <= idx <= len(NETEXEC_PROTOCOLS):
-                return NETEXEC_PROTOCOLS[idx-1]
-        if ans in NETEXEC_PROTOCOLS:
-            return ans
-        warn("Invalid choice.")
-
-def custom_command_help(mapping: dict):
-    header("Custom command")
-    info("You can type any shell command. The placeholders below will be expanded:")
-    for k, v in mapping.items():
-        info(f"  {k:14s} -> {v}")
-    print()
-    info("Examples:")
-    info("  httpx -l {TCP_IPS} -silent -o {OABASE}.urls.txt")
-    info("  nuclei -l {OABASE}.urls.txt -o {OABASE}.nuclei.txt")
-    info("  cat {TCP_IPS} | xargs -I{} sh -c 'echo {}; nmap -Pn -p {PORTS} {}'")
-
-def render_placeholders(template: str, mapping: dict) -> str:
-    s = template
-    for k, v in mapping.items():
-        s = s.replace(k, str(v))
-    return s
 
 # ============================================================
 

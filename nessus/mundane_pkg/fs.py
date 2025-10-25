@@ -2,7 +2,6 @@ from __future__ import annotations
 import os, re, shutil
 from pathlib import Path
 from datetime import datetime
-from typing import List
 from rich.progress import Progress, SpinnerColumn, TextColumn as ProgTextColumn, TimeElapsedColumn
 from rich.console import Console
 

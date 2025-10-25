@@ -13,4 +13,10 @@ from .render import (
 from .fs import (
     list_dirs, list_files, read_text_lines, safe_print_file, build_results_paths,
     is_review_complete, rename_review_complete, _default_page_size, pretty_severity_label,
-)           
+)
+from .tools import (
+    build_nmap_cmd, build_netexec_cmd,
+    choose_tool, choose_netexec_protocol,
+    custom_command_help, render_placeholders,
+    command_review_menu, copy_to_clipboard,
+)

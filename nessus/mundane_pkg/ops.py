@@ -1,15 +1,13 @@
 # Operational helpers: external commands, cloning, and shell checks (extracted; no behavior change)
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional, Any, List
-import os, re, shutil, subprocess, sys
+from typing import Optional
+import os, shutil, subprocess, sys
 from rich.progress import Progress, SpinnerColumn, TextColumn as ProgTextColumn, TimeElapsedColumn
 from rich.console import Console
 
 # --- in mundane_pkg/ops.py ---
-from .logging_setup import log_timing, _log_info, _log_error
-from .ansi import header, ok, warn, err, C
-from .constants import RESULTS_ROOT, REVIEW_PREFIX, PLUGIN_DETAILS_BASE, NETEXEC_PROTOCOLS, NSE_PROFILES
+from .ansi import header, ok, err, C
 
 # Create a console for the interactive flow
 _console_global = Console()
