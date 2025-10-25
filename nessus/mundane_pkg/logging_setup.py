@@ -15,6 +15,7 @@ def _env_truthy(name: str, default: bool = False) -> bool:
     return v.strip().lower() in {"1","true","yes","y","on"}
 
 def _init_logger() -> None:
+    global _USE_LOGURU
     log_path = os.environ.get("MUNDANE_LOG") or str(Path.home() / "mundane.log")
     debug = _env_truthy("MUNDANE_DEBUG", False)
     level = "DEBUG" if debug else "INFO"
@@ -32,7 +33,6 @@ def _init_logger() -> None:
                 _log.add(log_path, level=level, rotation="1 MB", retention=3, enqueue=False, backtrace=False, diagnose=False)
                 _log.info("Logger initialized (loguru) at {} with level {}", log_path, level)
             except Exception:
-                global _USE_LOGURU
                 _USE_LOGURU = False
         if not _USE_LOGURU:
             _logging.basicConfig(
@@ -97,3 +97,7 @@ def log_timing(fn):
             dt = (time.perf_counter() - t0) * 1000.0
             _log_debug(f"{fn.__name__} took {dt:.1f} ms")
     return _wrap
+
+# small public wrapper for __init__.py
+def setup_logging() -> None:
+    _init_logger()

@@ -4,9 +4,10 @@ from pathlib import Path
 from typing import Optional, Any, List
 import os, re, shutil, subprocess, sys
 
-from logging_setup import log_timing, _log_info, _log_error
-from ansi import header, ok, warn, err
-from constants import RESULTS_ROOT, REVIEW_PREFIX, PLUGIN_DETAILS_BASE, NETEXEC_PROTOCOLS, NSE_PROFILES  # noqa: F401
+# --- in mundane_pkg/ops.py ---
+from .logging_setup import log_timing, _log_info, _log_error
+from .ansi import header, ok, warn, err
+from .constants import RESULTS_ROOT, REVIEW_PREFIX, PLUGIN_DETAILS_BASE, NETEXEC_PROTOCOLS, NSE_PROFILES
 
 def require_cmd(name):
     if shutil.which(name) is None:
