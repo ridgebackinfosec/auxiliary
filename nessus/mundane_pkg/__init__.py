@@ -12,7 +12,7 @@ from .render import (
 )
 from .fs import (
     list_dirs, list_files, read_text_lines, safe_print_file, build_results_paths,
-    is_review_complete, rename_review_complete, _default_page_size, pretty_severity_label,
+    is_review_complete, rename_review_complete, default_page_size, pretty_severity_label,
 )
 from .tools import (
     build_nmap_cmd, build_netexec_cmd,

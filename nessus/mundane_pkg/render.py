@@ -12,7 +12,7 @@ from .ansi import (
     info, fmt_action, warn
 )
 
-from .fs import list_files, _default_page_size, pretty_severity_label
+from .fs import list_files, default_page_size, pretty_severity_label
 from .logging_setup import log_timing
 
 _console_global = Console()
@@ -30,7 +30,7 @@ def menu_pager(text: str, page_size: Optional[int] = None):
     lines = text.splitlines()
     if not lines:
         return
-    ps = page_size or _default_page_size()
+    ps = page_size or default_page_size()
     total_pages = max(1, math.ceil(len(lines) / ps))
 
     if total_pages == 1:
