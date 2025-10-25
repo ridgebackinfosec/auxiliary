@@ -24,10 +24,14 @@ from mundane_pkg import (
     C, header, ok, warn, err, info,
     fmt_action, fmt_reviewed, cyan_label, colorize_severity_label,
 
-    # render
+    # render:
     render_scan_table, render_severity_table, render_file_list_table,
     render_compare_tables, render_actions_footer, show_actions_help,
-    show_reviewed_help, menu_pager, pretty_severity_label, list_files, _default_page_size
+    show_reviewed_help, menu_pager, pretty_severity_label, list_files, _default_page_size,
+
+    # fs:
+    list_dirs, read_text_lines, safe_print_file, build_results_paths,
+    is_review_complete, rename_review_complete,
 )
 
 import sys, os, re, random, shutil, tempfile, subprocess, ipaddress, types, math
@@ -78,36 +82,6 @@ def yesno(prompt: str, default: str = "y") -> bool:
             return False
         warn("Please answer 'y' or 'n'.")
 
-def read_text_lines(path: Path):
-    return [ln.rstrip("\r\n") for ln in path.read_text(encoding="utf-8", errors="ignore").splitlines()]
-
-def safe_print_file(path: Path, max_bytes: int = 2_000_000):
-    """Print a file with a heading; guard against huge files."""
-    try:
-        if not path.exists():
-            warn(f"(missing) {path}")
-            return
-        size = path.stat().st_size
-        header(f"Showing: {path} ({size} bytes)")
-        if size > max_bytes:
-            warn(f"File is large; showing first {max_bytes} bytes.")
-        with Progress(
-            SpinnerColumn(style="cyan"),
-            ProgTextColumn("[progress.description]{task.description}"),
-            TimeElapsedColumn(),
-            console=_console_global,
-            transient=True,
-        ) as progress:
-            progress.add_task("Reading file...", start=True)
-            with path.open("rb") as f:
-                data = f.read(max_bytes)
-        try:
-            print(data.decode("utf-8", errors="replace"))
-        except Exception:
-            print(data)
-    except Exception as e:
-        warn(f"Could not display file: {e}")
-
 # === Paged viewing helpers (Raw / Grouped) ===
 def _file_raw_payload_text(path: Path, max_bytes: int = 2_000_000) -> str:
     with path.open("rb") as f:
@@ -128,9 +102,6 @@ def page_text(text: str):
     """Send text through a pager if possible; otherwise print."""
     with _console_global.pager(styles=True):
         print(text, end="" if text.endswith("\n") else "\n")
-
-def list_dirs(p: Path):
-    return sorted([d for d in p.iterdir() if d.is_dir()], key=lambda d: d.name)
 
 def split_host_port(token: str):
     """
@@ -342,25 +313,6 @@ def choose_from_list(items, title: str, allow_back=False, allow_exit=False):
                 return items[i-1]
         warn("Invalid choice.")
 
-def is_review_complete(path: Path) -> bool:
-    return path.name.startswith(REVIEW_PREFIX)
-
-
-def rename_review_complete(path: Path):
-    name = path.name
-    prefix = REVIEW_PREFIX
-    if is_review_complete(path):
-        warn("Already marked as review complete.")
-        return path
-    new = path.with_name(prefix + name)
-    try:
-        path.rename(new)
-        ok(f"Renamed to {new.name}")
-        return new
-    except Exception as e:
-        err(f"Failed to rename: {e}")
-        return path
-
 # === NSE Profiles (single-selection) ===
 NSE_PROFILES = [
     ("Crypto", ["ssl-enum-ciphers", "ssl-cert", "ssl-date"], False),
@@ -393,15 +345,6 @@ def choose_nse_profile():
                 ok(f"Selected profile: {name} — including: {', '.join(scripts)}")
                 return scripts[:], needs_udp
         warn("Invalid choice.")
-
-def build_results_paths(scan_dir: Path, sev_dir: Path, plugin_filename: str):
-    stem = Path(plugin_filename).stem
-    sev_label = pretty_severity_label(sev_dir.name)
-    out_dir = RESULTS_ROOT / scan_dir.name / sev_label / stem
-    out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    oabase = out_dir / f"run-{ts}"
-    return out_dir, oabase
 
 # ====== Compare hosts/ports across filtered files ======
 def compare_filtered(files):
