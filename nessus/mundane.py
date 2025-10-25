@@ -48,14 +48,6 @@ _console_global = Console()
 # Install pretty tracebacks (no try/except; fail loudly if Rich is absent)
 rich_tb_install(show_locals=False)
 
-def root_or_sudo_available() -> bool:
-    try:
-        if os.name != "nt" and os.geteuid() == 0:
-            return True
-    except AttributeError:
-        pass
-    return shutil.which("sudo") is not None
-
 def yesno(prompt: str, default: str = "y") -> bool:
     """
     Consistent yes/no prompts with visible default: [Y/n] if default yes, [y/N] if default no.

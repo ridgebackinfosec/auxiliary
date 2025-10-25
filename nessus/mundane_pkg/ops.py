@@ -9,6 +9,16 @@ from .logging_setup import log_timing, _log_info, _log_error
 from .ansi import header, ok, warn, err
 from .constants import RESULTS_ROOT, REVIEW_PREFIX, PLUGIN_DETAILS_BASE, NETEXEC_PROTOCOLS, NSE_PROFILES
 
+def root_or_sudo_available() -> bool:
+    """Return True if we're root on *nix or 'sudo' is available on PATH."""
+    try:
+        if os.name != "nt" and os.geteuid() == 0:
+            return True
+    except AttributeError:
+        # os.geteuid not present on Windows; fall back to sudo check
+        pass
+    return shutil.which("sudo") is not None
+
 def require_cmd(name):
     if shutil.which(name) is None:
         err(f"Required command '{name}' not found on PATH.")
@@ -19,4 +29,3 @@ def resolve_cmd(candidates):
         if shutil.which(c):
             return c
     return None
-
