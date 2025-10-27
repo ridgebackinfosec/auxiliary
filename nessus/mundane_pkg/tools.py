@@ -195,35 +195,92 @@ def _fetch_html(url: str, timeout: int = 12) -> str:
     resp.raise_for_status()
     return resp.text
 
-def _extract_candidates_from_text(text: str) -> List[str]:
+def _extract_candidates_from_text(text: str, soup=None) -> List[str]:
+    """
+    DOM-aware and text-based extractor for Metasploit candidate terms.
+    Priority:
+      1. If soup provided: find element(s) mentioning 'Metasploit' and inspect nearby siblings/children for parenthesized tokens.
+      2. Use MSF_AFTER_RE to capture text immediately following "Metasploit (...)"
+      3. Look for the first parenthesized token after the word 'metasploit' within a window.
+      4. Legacy fallback: scan all parenthesized tokens across the page.
+    Returns a de-duplicated list of cleaned candidate strings.
+    """
+    def clean_token(t: str) -> str:
+        tt = re.sub(r"\\s+", " ", t).strip()
+        tt = tt.strip(" \\n\\t\"'.:;")
+        return tt
+
+    # 0) If soup is provided, prefer DOM traversal (scan nodes that contain 'Metasploit')
+    if soup is not None:
+        for string_node in soup.find_all(string=re.compile(r"metasploit", re.I)):
+            parent = string_node.parent
+            # 0a: Check same parent element text after the match
+            try:
+                inner = parent.get_text(" ", strip=True)
+                idx = inner.lower().find("metasploit")
+                if idx != -1:
+                    rest_inner = inner[idx: idx + 800]
+                    m_par = re.search(r"\\(\\s*([^)]+?)\\s*\\)", rest_inner)
+                    if m_par:
+                        val = m_par.group(1).strip()
+                        if val and not val.lower().startswith("http") and val.lower() != "metasploit":
+                            return [clean_token(val)]
+            except Exception:
+                pass
+            # 0b: Inspect next siblings for a parenthesized token
+            try:
+                for sib in parent.next_siblings:
+                    stext = ""
+                    if hasattr(sib, "get_text"):
+                        stext = sib.get_text(" ", strip=True)
+                    else:
+                        stext = str(sib).strip()
+                    m = re.search(r"\\(\\s*([^)]+?)\\s*\\)", stext)
+                    if m:
+                        val = m.group(1).strip()
+                        if val and not val.lower().startswith("http") and val.lower() != "metasploit":
+                            return [clean_token(val)]
+            except Exception:
+                pass
+
+    # 1) Direct regex match (Metasploit ( ... ) style)
+    m2 = MSF_AFTER_RE.search(text)
+    if m2:
+        val = m2.group(1).strip()
+        if val and not val.lower().startswith("http") and val.lower() != "metasploit":
+            return [clean_token(val)]
+
+    # 2) First parenthesis AFTER the word "metasploit" in a text window
+    idx = text.lower().find("metasploit")
+    if idx != -1:
+        window = text[idx: idx + 800]
+        m_par = re.search(r"\\(\\s*([^)]+?)\\s*\\)", window)
+        if m_par:
+            val = m_par.group(1).strip()
+            if val and not val.lower().startswith("http") and val.lower() != "metasploit":
+                return [clean_token(val)]
+
+    # 3) Legacy fallback: grab parenthesized fragments across the page
     candidates: List[str] = []
     for m in PAREN_RE.finditer(text):
         inner = m.group(1).strip()
         if len(inner) > 3 and not inner.lower().startswith("http"):
             candidates.append(inner)
-    m2 = MSF_AFTER_RE.search(text)
-    if m2:
+
+    # Also include MSF_AFTER_RE bag if present and not already in candidates
+    if 'm2' in locals() and m2:
         val = m2.group(1).strip()
         if val and val not in candidates:
-            candidates.append(val)
-    if not candidates:
-        idx = text.lower().find("metasploit")
-        if idx != -1:
-            tail = text[idx : idx + 120]
-            tail = re.sub(r"\s+", " ", tail).strip()
-            tail = re.sub(r"(?i)metasploit[:\-\s]*", "", tail).strip()
-            if tail:
-                tail = re.split(r"[\|\-–—;:<>/\\]+", tail)[0].strip()
-                if tail and len(tail) > 3:
-                    candidates.append(tail)
-    seen = set()
-    uniq: List[str] = []
-    for c in candidates:
-        if c not in seen:
-            seen.add(c)
-            uniq.append(c)
-    return uniq
+            candidates.insert(0, val)
 
+    # Clean, dedupe, and filter
+    terms = list(dict.fromkeys(candidates))
+    cleaned = []
+    for t in terms:
+        tt = clean_token(t)
+        if len(tt) > 2 and tt.lower() != "metasploit":
+            cleaned.append(tt)
+    return cleaned
 def _find_search_terms_from_html(html: str) -> List[str]:
     if not BeautifulSoup:
         return []
@@ -236,15 +293,15 @@ def _find_search_terms_from_html(html: str) -> List[str]:
     if header_el:
         nxt = header_el.find_next_sibling()
         if nxt:
-            terms.extend(_extract_candidates_from_text(nxt.get_text(" ", strip=True)))
+            terms.extend(_extract_candidates_from_text(nxt.get_text(" ", strip=True), soup=soup))
         if not terms:
-            terms.extend(_extract_candidates_from_text(header_el.parent.get_text(" ", strip=True)))
+            terms.extend(_extract_candidates_from_text(header_el.parent.get_text(" ", strip=True), soup=soup))
     if not terms:
         ms_elems = soup.find_all(string=re.compile(r"\bMetasploit\b", re.I))
         for s in ms_elems:
             parent = s.parent
             if parent:
-                terms.extend(_extract_candidates_from_text(parent.get_text(" ", strip=True)))
+                terms.extend(_extract_candidates_from_text(parent.get_text(" ", strip=True), soup=soup))
                 if not terms and parent.parent:
                     terms.extend(_extract_candidates_from_text(parent.parent.get_text(" ", strip=True)))
     if not terms:
