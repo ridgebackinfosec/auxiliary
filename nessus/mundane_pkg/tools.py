@@ -5,6 +5,7 @@ import pyperclip
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 import os, sys, shutil, subprocess
+import json
 
 def choose_nse_profile():
     header("NSE Profiles")
@@ -282,6 +283,47 @@ def _extract_candidates_from_text(text: str, soup=None) -> List[str]:
             cleaned.append(tt)
     return cleaned
 def _find_search_terms_from_html(html: str) -> List[str]:
+
+    # --- Prefer structured page data when available (Next.js __NEXT_DATA__ JSON) ---
+    try:
+        # soup is available in callers; try to locate the __NEXT_DATA__ script tag with JSON that includes plugin metadata
+        script = None
+        if 'soup' in locals() and getattr(soup, "find", None):
+            script = soup.find("script", {"id": "__NEXT_DATA__"})
+        else:
+            # fallback: search for the script by regex in raw html
+            m = re.search(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', html, flags=re.S)
+            if m:
+                script = type("S", (), {"string": m.group(1)})
+
+        if script and getattr(script, "string", None):
+            try:
+                data = json.loads(script.string)
+                # navigate to plugin metadata if present
+                plugin = data.get("props", {}).get("pageProps", {}).get("plugin")
+                if plugin and isinstance(plugin, dict):
+                    # prefer explicit metasploit_name field
+                    ms_name = plugin.get("metasploit_name")
+                    if ms_name and isinstance(ms_name, str) and ms_name.strip():
+                        return [ms_name.strip()]
+                    # otherwise inspect attributes list for metasploit_name attribute
+                    attrs = plugin.get("attributes") or plugin.get("attributes", [])
+                    if isinstance(attrs, list):
+                        for a in attrs:
+                            try:
+                                if a.get("attribute_name", "").lower() == "metasploit_name".lower():
+                                    val = a.get("attribute_value")
+                                    if val and isinstance(val, str) and val.strip():
+                                        return [val.strip()]
+                            except Exception:
+                                continue
+            except Exception:
+                # JSON parse failed; safe to ignore and continue to legacy extraction
+                pass
+    except Exception:
+        # Any error here should not break extraction; fall back to text-based methods
+        pass
+    # --- End structured-data preference ---
     if not BeautifulSoup:
         return []
     soup = BeautifulSoup(html, "html.parser")
