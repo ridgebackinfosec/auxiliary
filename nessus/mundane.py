@@ -738,18 +738,6 @@ def main(args):
                         if tool_choice is None:
                             break
 
-                        # If user selected Metasploit, offer an interactive search based on plugin URL
-                        if tool_choice == "metasploit":
-                            try:
-                                plugin_url = _pd_line.split()[-1] if _pd_line else None
-                            except Exception:
-                                plugin_url = None
-                            if plugin_url:
-                                try:
-                                    _tools.interactive_msf_search(plugin_url)
-                                except Exception:
-                                    warn("Metasploit search failed; continuing to tool menu.")
-
                         _tmp_dir, oabase = build_results_paths(scan_dir, sev_dir, chosen.name)
                         results_dir = out_dir_static
 
@@ -806,6 +794,20 @@ def main(args):
                             nxc_relay_path = relay_path
                             display_cmd = cmd
                             artifact_note = f"NetExec log:   {nxc_log}"
+
+                        elif tool_choice == "metasploit":
+                            # If user selected Metasploit, offer an interactive search based on plugin URL
+                            try:
+                                plugin_url = _pd_line.split()[-1] if _pd_line else None
+                            except Exception:
+                                plugin_url = None
+                            if plugin_url:
+                                try:
+                                    _tools.interactive_msf_search(plugin_url)
+                                except Exception:
+                                    warn("Metasploit search failed; continuing to tool menu.")
+                            # After the interactive search return to the tool menu so user can pick another action
+                            continue
 
                         elif tool_choice == "custom":
                             mapping = {
@@ -1326,6 +1328,20 @@ def main(args):
                         nxc_relay_path = relay_path
                         display_cmd = cmd
                         artifact_note = f"NetExec log:   {nxc_log}"
+
+                    elif tool_choice == "metasploit":
+                        # If user selected Metasploit, offer an interactive search based on plugin URL
+                        try:
+                            plugin_url = _pd_line.split()[-1] if _pd_line else None
+                        except Exception:
+                            plugin_url = None
+                        if plugin_url:
+                            try:
+                                _tools.interactive_msf_search(plugin_url)
+                            except Exception:
+                                warn("Metasploit search failed; continuing to tool menu.")
+                        # After the interactive search return to the tool menu so user can pick another action
+                        continue
 
                     elif tool_choice == "custom":
                         mapping = {
