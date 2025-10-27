@@ -85,3 +85,18 @@ def default_page_size() -> int:
         return max(8, h - 10)
     except Exception:
         return 12
+    
+def write_work_files(workdir: Path, hosts, ports_str: str, udp: bool):
+    workdir.mkdir(parents=True, exist_ok=True)
+    tcp_ips = workdir / "tcp_ips.list"
+    udp_ips = workdir / "udp_ips.list"
+    tcp_sockets = workdir / "tcp_host_ports.list"
+
+    tcp_ips.write_text("\n".join(hosts) + "\n", encoding="utf-8")
+    if udp:
+        udp_ips.write_text("\n".join(hosts) + "\n", encoding="utf-8")
+    if ports_str:
+        with tcp_sockets.open("w", encoding="utf-8") as f:
+            for h in hosts:
+                f.write(f"{h}:{ports_str}\n")
+    return tcp_ips, udp_ips, tcp_sockets

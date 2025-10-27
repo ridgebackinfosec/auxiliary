@@ -1,9 +1,33 @@
-from .ansi import header, warn, fmt_action, info
-from .constants import NETEXEC_PROTOCOLS
+from .ansi import header, warn, fmt_action, info, ok
+from .constants import NETEXEC_PROTOCOLS, NSE_PROFILES
 from pathlib import Path
 import pyperclip
 
 import os, sys, shutil, subprocess
+
+def choose_nse_profile():
+    header("NSE Profiles")
+    for i, (name, scripts, _) in enumerate(NSE_PROFILES, 1):
+        print(f"[{i}] {name} ({', '.join(scripts)})")
+    print(fmt_action("[N] None (no NSE profile)"))
+    print(fmt_action("[B] Back"))
+    while True:
+        try:
+            ans = input("Choose: ").strip().lower()
+        except KeyboardInterrupt:
+            warn("\nInterrupted — returning to file menu.")
+            return [], False
+        if ans in ("b", "back"):
+            return [], False
+        if ans in ("n", "none", ""):
+            return [], False
+        if ans.isdigit():
+            i = int(ans)
+            if 1 <= i <= len(NSE_PROFILES):
+                name, scripts, needs_udp = NSE_PROFILES[i-1]
+                ok(f"Selected profile: {name} — including: {', '.join(scripts)}")
+                return scripts[:], needs_udp
+        warn("Invalid choice.")
 
 def build_nmap_cmd(udp, nse_option, ips_file, ports_str, use_sudo, oabase: Path):
     cmd = []
