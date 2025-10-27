@@ -2,8 +2,6 @@ from .ansi import header, warn, fmt_action, info, ok
 from .constants import NETEXEC_PROTOCOLS, NSE_PROFILES
 from pathlib import Path
 import pyperclip
-import requests
-from bs4 import beautifulsoup4
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 import os, sys, shutil, subprocess
