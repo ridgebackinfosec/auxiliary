@@ -737,21 +737,21 @@ def main(args):
                         # If this file indicates an MSF module, offer to search for a module before choosing a tool
                         if chosen.name.lower().endswith("-msf.txt"):
                             from mundane_pkg import tools as _tools
-                            try:
-                                if Confirm.ask("Search for available Metasploit module?"):
-                                    try:
-                                        plugin_url = _pd_line.split()[-1] if _pd_line else None
-                                    except Exception:
-                                        plugin_url = None
-                                    if plugin_url:
-                                        _tools.interactive_msf_search(plugin_url)
-                            except KeyboardInterrupt:
-                                # user aborted the prompt; continue to tool menu
-                                pass
-
                         tool_choice = choose_tool()
                         if tool_choice is None:
                             break
+
+                        # If user selected Metasploit, offer an interactive search based on plugin URL
+                        if tool_choice == "metasploit":
+                            try:
+                                plugin_url = _pd_line.split()[-1] if _pd_line else None
+                            except Exception:
+                                plugin_url = None
+                            if plugin_url:
+                                try:
+                                    _tools.interactive_msf_search(plugin_url)
+                                except Exception:
+                                    warn("Metasploit search failed; continuing to tool menu.")
 
                         _tmp_dir, oabase = build_results_paths(scan_dir, sev_dir, chosen.name)
                         results_dir = out_dir_static

@@ -66,7 +66,8 @@ def choose_tool():
     header("Choose a tool")
     print("[1] nmap")
     print("[2] netexec — multi-protocol")
-    print("[3] Custom command (advanced)")
+    print("[3] metasploit — search for modules")
+    print("[4] Custom command (advanced)")
     print(fmt_action("[B] Back"))
     while True:
         try:
@@ -80,7 +81,8 @@ def choose_tool():
             i = int(ans)
             if i == 1: return "nmap"
             if i == 2: return "netexec"
-            if i == 3: return "custom"
+            if i == 3: return "metasploit"
+            if i == 4: return "custom"
         warn("Invalid choice.")
 
 def choose_netexec_protocol():
@@ -185,7 +187,7 @@ except Exception:
     requests = None
     BeautifulSoup = None
 
-HEADERS = {"User-Agent": "mundane-msf-search/1.0 (+https://github.com/your-repo)"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"}
 PAREN_RE = re.compile(r"\(([^)]+)\)")
 MSF_AFTER_RE = re.compile(r"Metasploit[:\-\s]*\(?([^)]+)\)?", re.IGNORECASE)
 
