@@ -5,8 +5,6 @@ from rich.table import Table
 from rich.panel import Panel
 from rich import box
 from rich.text import Text
-from rich.prompt import Confirm, Prompt
-from typing import Iterable
 from pathlib import Path
 import math
 
@@ -53,7 +51,7 @@ def menu_pager(text: str, page_size: Optional[int] = None):
         print("─" * 80)
         print(fmt_action("[N] Next page / [P] Prev page / [B] Back"))
         try:
-            ans = ask_text("Action:", to_lower=True)
+            ans = input("Action: ").strip().lower()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning.")
             return
@@ -288,50 +286,3 @@ def severity_style(label: str) -> str:
     if "low"      in l: return "green"
     if "info"     in l: return "cyan"
     return "magenta"
-
-# === Unified prompt helpers (Rich) ===
-def ask_confirm(message: str, default: bool | None = False) -> bool:
-    """Unified yes/no confirmation using Rich. Mirrors previous yes/no semantics."""
-    return bool(Confirm.ask(message, default=bool(default)))
-
-def ask_text(message: str, default: str | None = None, to_lower: bool = False) -> str:
-    """Unified text prompt using Rich. Returns stripped string; optionally lower-cased."""
-    if default is None:
-        ans = Prompt.ask(message, default="").strip()
-    else:
-        ans = Prompt.ask(message, default=default).strip()
-    return ans.lower() if to_lower else ans
-
-def ask_number_or_none(message: str, max_number: int, default_none_key: str = "N") -> int | None:
-    """Prompt for an integer in [1, max_number] or None via a sentinel key.
-    Example UI: "Copy which one-liner to clipboard? (number or [N]one) (N):"
-    Returns an int (1..max_number) or None.
-    """
-    default_display = default_none_key.upper()
-    suffix = f" (number or [{default_display}]one) ({default_display}):"
-    while True:
-        raw = Prompt.ask(message + suffix, default=default_display).strip()
-        if not raw:
-            return None
-        if raw.upper() == default_none_key.upper():
-            return None
-        if raw.isdigit():
-            n = int(raw)
-            if 1 <= n <= max_number:
-                return n
-        _console_global.print(f"[yellow]Enter 1–{max_number} or {default_display}[/]")
-
-def ask_key(message: str, valid_keys: Iterable[str], default: str | None = None) -> str:
-    """Prompt for a single key from a set (case-insensitive). Returns normalized lower-case key."""
-    norm = {k.lower() for k in valid_keys}
-    default_disp = default if default is not None else None
-    while True:
-        ans = Prompt.ask(message, default=default_disp).strip()
-        if not ans:
-            if default is not None:
-                return default.lower()
-            continue
-        key = ans.lower()
-        if key in norm:
-            return key
-        _console_global.print(f"[yellow]Choose one of: {', '.join(sorted(norm))}[/]")

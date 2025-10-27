@@ -56,7 +56,7 @@ import typer
 from rich.console import Console
 from rich.traceback import install as rich_tb_install
 from rich.progress import Progress, SpinnerColumn, TextColumn as ProgTextColumn, TimeElapsedColumn
-from mundane_pkg.render import ask_confirm, ask_text, ask_number_or_none, ask_key
+from rich.prompt import Confirm
 
 # Create a console for the interactive flow
 _console_global = Console()
@@ -75,7 +75,7 @@ def yesno(prompt: str, default: str = "y") -> bool:
     suffix = " [Y/n] " if default == "y" else " [y/N] "
     while True:
         try:
-            ans = ask_text(prompt.rstrip() + suffix, to_lower=True)
+            ans = input(prompt.rstrip() + suffix).strip().lower()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning to previous menu.")
             raise
@@ -139,7 +139,7 @@ def choose_from_list(items, title: str, allow_back=False, allow_exit=False):
         print(fmt_action("[X] Exit"))
     while True:
         try:
-            ans = ask_text("Choose: ", to_lower=True)
+            ans = input("Choose: ").strip().lower()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning.")
             raise
@@ -308,7 +308,7 @@ def main(args):
         render_scan_table(scans)
         print(fmt_action("[X] Exit"))
         try:
-            ans = ask_text("Choose: ", to_lower=True)
+            ans = input("Choose: ").strip().lower()
         except KeyboardInterrupt:
             warn("\nInterrupted — exiting.")
             return
@@ -354,7 +354,7 @@ def main(args):
 
             print(fmt_action("[B] Back"))
             try:
-                ans = ask_text("Choose: ", to_lower=True)
+                ans = input("Choose: ").strip().lower()
             except KeyboardInterrupt:
                 warn("\nInterrupted — returning to scan menu.")
                 break
@@ -439,7 +439,7 @@ def main(args):
                             can_prev=can_prev,
                         )
 
-                        ans2 = ask_text("Choose a file number, or action: ", to_lower=True)
+                        ans2 = input("Choose a file number, or action: ").strip().lower()
                     except KeyboardInterrupt:
                         warn("\nInterrupted — returning to severity menu.")
                         break
@@ -469,7 +469,7 @@ def main(args):
                             warn("Already at first page.")
                         continue
                     if ans2 == "f":
-                        file_filter = ask_text("Enter substring to filter by: ")
+                        file_filter = input("Enter substring to filter by: ").strip()
                         page_idx = 0
                         continue
                     if ans2 == "c":
@@ -508,7 +508,7 @@ def main(args):
                         # actions footer under the list
                         print(fmt_action("[?] Help  [F] Set filter  [C] Clear filter  [B] Back"))
                         try:
-                            choice = ask_text("Action or [B]ack: ", to_lower=True)
+                            choice = input("Action or [B]ack: ").strip().lower()
                         except KeyboardInterrupt:
                             warn("\nInterrupted — returning.")
                             continue
@@ -516,7 +516,7 @@ def main(args):
                             show_reviewed_help()
                             continue
                         if choice == "f":
-                            reviewed_filter = ask_text("Enter substring to filter by: ")
+                            reviewed_filter = input("Enter substring to filter by: ").strip()
                             continue
                         if choice == "c":
                             reviewed_filter = ""
@@ -533,7 +533,7 @@ def main(args):
                             f"You are about to rename {len(candidates)} files with prefix 'REVIEW_COMPLETE-'.\n"
                             "Type 'mark' to confirm, or anything else to cancel: "
                         )
-                        confirm = ask_text(f"{C.RED}{confirm_msg}{C.RESET}", to_lower=True)
+                        confirm = input(f"{C.RED}{confirm_msg}{C.RESET}").strip().lower()
                         if confirm != "mark":
                             info("Canceled.")
                             continue
@@ -563,7 +563,9 @@ def main(args):
                             visible = min(5, len(groups))
                             opts = " | ".join(f"g{i+1}" for i in range(visible))
                             ellipsis = " | etc." if len(groups) > visible else ""
-                            choice = ask_text(f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: ", to_lower=True)
+                            choice = input(
+                                f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: "
+                            ).strip().lower()
                             if choice.startswith("g") and choice[1:].isdigit():
                                 idx = int(choice[1:]) - 1
                                 if 0 <= idx < len(groups):
@@ -580,7 +582,9 @@ def main(args):
                             visible = min(5, len(groups))
                             opts = " | ".join(f"g{i+1}" for i in range(visible))
                             ellipsis = " | etc." if len(groups) > visible else ""
-                            choice = ask_text(f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: ", to_lower=True)
+                            choice = input(
+                                f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: "
+                            ).strip().lower()
                             if choice.startswith("g") and choice[1:].isdigit():
                                 idx = int(choice[1:]) - 1
                                 if 0 <= idx < len(groups):
@@ -634,7 +638,7 @@ def main(args):
                         info(f"Ports detected: {ports_str}")
 
                     try:
-                        view_choice = ask_text("\nView file? [R]aw / [G]rouped / [H]osts-only / [C] Copy / [N]one (default=N): ", to_lower=True)
+                        view_choice = input("\nView file? [R]aw / [G]rouped / [H]osts-only / [C] Copy / [N]one (default=N): ").strip().lower()
                     except KeyboardInterrupt:
                         continue
                     if view_choice in ("r", "raw"):
@@ -647,7 +651,7 @@ def main(args):
                         text = _hosts_only_paged_text(chosen)
                         menu_pager(text)
                     elif view_choice in ("c", "copy"):
-                        sub = ask_text("Copy [R]aw / [G]rouped / [H]osts-only? (default=G): ", to_lower=True)
+                        sub = input("Copy [R]aw / [G]rouped / [H]osts-only? (default=G): ").strip().lower()
                         if sub in ("", "g", "grouped"):
                             payload = _grouped_payload_text(chosen)
                         elif sub in ("h", "hosts", "hosts-only"):
@@ -702,7 +706,7 @@ def main(args):
                         if do_sample:
                             while True:
                                 try:
-                                    k = ask_text("How many hosts to sample? ")
+                                    k = input("How many hosts to sample? ").strip()
                                 except KeyboardInterrupt:
                                     warn("\nInterrupted — not sampling.")
                                     break
@@ -734,7 +738,7 @@ def main(args):
                         if chosen.name.lower().endswith("-msf.txt"):
                             from mundane_pkg import tools as _tools
                             try:
-                                if ask_confirm("Search for available Metasploit module?"):
+                                if Confirm.ask("Search for available Metasploit module?"):
                                     try:
                                         plugin_url = _pd_line.split()[-1] if _pd_line else None
                                     except Exception:
@@ -766,7 +770,7 @@ def main(args):
                                 break
 
                             try:
-                                extra = ask_text("Enter additional NSE scripts (comma-separated, no spaces, or Enter to skip): ")
+                                extra = input("Enter additional NSE scripts (comma-separated, no spaces, or Enter to skip): ").strip()
                             except KeyboardInterrupt:
                                 break
                             if extra:
@@ -818,7 +822,7 @@ def main(args):
                             }
                             custom_command_help(mapping)
                             try:
-                                template = ask_text("\nEnter your command (placeholders allowed): ")
+                                template = input("\nEnter your command (placeholders allowed): ").strip()
                             except KeyboardInterrupt:
                                 break
                             if not template:
@@ -968,7 +972,7 @@ def main(args):
                         can_prev=can_prev,
                     )
 
-                    ans3 = ask_text("Choose a file number, or action: ", to_lower=True)
+                    ans3 = input("Choose a file number, or action: ").strip().lower()
                 except KeyboardInterrupt:
                     warn("\nInterrupted — returning to severity menu.")
                     break
@@ -998,7 +1002,7 @@ def main(args):
                         warn("Already at first page.")
                     continue
                 if ans3 == "f":
-                    file_filter = ask_text("Enter substring to filter by: ")
+                    file_filter = input("Enter substring to filter by: ").strip()
                     page_idx = 0
                     continue
                 if ans3 == "c":
@@ -1039,7 +1043,7 @@ def main(args):
                     # footer below the list
                     print(fmt_action("[?] Help  [F] Set filter  [C] Clear filter  [B] Back"))
                     try:
-                        choice = ask_text("Action or [B]ack: ", to_lower=True)
+                        choice = input("Action or [B]ack: ").strip().lower()
                     except KeyboardInterrupt:
                         warn("\nInterrupted — returning.")
                         continue
@@ -1047,7 +1051,7 @@ def main(args):
                         show_reviewed_help()
                         continue
                     if choice == "f":
-                        reviewed_filter = ask_text("Enter substring to filter by: ")
+                        reviewed_filter = input("Enter substring to filter by: ").strip()
                         continue
                     if choice == "c":
                         reviewed_filter = ""
@@ -1064,7 +1068,7 @@ def main(args):
                         f"You are about to rename {len(candidates)} files with prefix 'REVIEW_COMPLETE-'.\n"
                         "Type 'mark' to confirm, or anything else to cancel: "
                     )
-                    confirm = ask_text(f"{C.RED}{confirm_msg}{C.RESET}", to_lower=True)
+                    confirm = input(f"{C.RED}{confirm_msg}{C.RESET}").strip().lower()
                     if confirm != "mark":
                         info("Canceled.")
                         continue
@@ -1094,7 +1098,9 @@ def main(args):
                         visible = min(5, len(groups))
                         opts = " | ".join(f"g{i+1}" for i in range(visible))
                         ellipsis = " | etc." if len(groups) > visible else ""
-                        choice = ask_text(f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: ", to_lower=True)
+                        choice = input(
+                            f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: "
+                        ).strip().lower()
                         if choice.startswith("g") and choice[1:].isdigit():
                             idx = int(choice[1:]) - 1
                             if 0 <= idx < len(groups):
@@ -1111,7 +1117,9 @@ def main(args):
                         visible = min(5, len(groups))
                         opts = " | ".join(f"g{i+1}" for i in range(visible))
                         ellipsis = " | etc." if len(groups) > visible else ""
-                        choice = ask_text(f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: ", to_lower=True)
+                        choice = input(
+                            f"\n[Enter] back | choose {opts}{ellipsis} to filter to a group: "
+                        ).strip().lower()
                         if choice.startswith("g") and choice[1:].isdigit():
                             idx = int(choice[1:]) - 1
                             if 0 <= idx < len(groups):
@@ -1165,7 +1173,7 @@ def main(args):
                     info(f"Ports detected: {ports_str}")
 
                 try:
-                    view_choice = ask_text("\nView file? [R]aw / [G]rouped / [H]osts-only / [C] Copy / [N]one (default=N): ", to_lower=True)
+                    view_choice = input("\nView file? [R]aw / [G]rouped / [H]osts-only / [C] Copy / [N]one (default=N): ").strip().lower()
                 except KeyboardInterrupt:
                     continue
                 if view_choice in ("r", "raw"):
@@ -1178,7 +1186,7 @@ def main(args):
                     text = _hosts_only_paged_text(chosen)
                     menu_pager(text)
                 elif view_choice in ("c", "copy"):
-                    sub = ask_text("Copy [R]aw / [G]rouped / [H]osts-only? (default=G): ", to_lower=True)
+                    sub = input("Copy [R]aw / [G]rouped / [H]osts-only? (default=G): ").strip().lower()
                     if sub in ("", "g", "grouped"):
                         payload = _grouped_payload_text(chosen)
                     elif sub in ("h", "hosts", "hosts-only"):
@@ -1233,7 +1241,7 @@ def main(args):
                     if do_sample:
                         while True:
                             try:
-                                k = ask_text("How many hosts to sample? ")
+                                k = input("How many hosts to sample? ").strip()
                             except KeyboardInterrupt:
                                 warn("\nInterrupted — not sampling.")
                                 break
@@ -1265,7 +1273,7 @@ def main(args):
                     if chosen.name.lower().endswith("-msf.txt"):
                         from mundane_pkg import tools as _tools
                         try:
-                            if ask_confirm("Search for available Metasploit module?"):
+                            if Confirm.ask("Search for available Metasploit module?"):
                                 try:
                                     plugin_url = _pd_line.split()[-1] if _pd_line else None
                                 except Exception:
@@ -1297,7 +1305,7 @@ def main(args):
                             break
 
                         try:
-                            extra = ask_text("Enter additional NSE scripts (comma-separated, no spaces, or Enter to skip): ")
+                            extra = input("Enter additional NSE scripts (comma-separated, no spaces, or Enter to skip): ").strip()
                         except KeyboardInterrupt:
                             break
                         if extra:
@@ -1349,7 +1357,7 @@ def main(args):
                         }
                         custom_command_help(mapping)
                         try:
-                            template = ask_text("\nEnter your command (placeholders allowed): ")
+                            template = input("\nEnter your command (placeholders allowed): ").strip()
                         except KeyboardInterrupt:
                             break
                         if not template:

@@ -6,8 +6,6 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 import os, sys, shutil, subprocess
 
-from .render import ask_text, ask_confirm, ask_number_or_none
-
 def choose_nse_profile():
     header("NSE Profiles")
     for i, (name, scripts, _) in enumerate(NSE_PROFILES, 1):
@@ -16,7 +14,7 @@ def choose_nse_profile():
     print(fmt_action("[B] Back"))
     while True:
         try:
-            ans = ask_text("Choose:", to_lower=True)
+            ans = input("Choose: ").strip().lower()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning to file menu.")
             return [], False
@@ -71,7 +69,7 @@ def choose_tool():
     print(fmt_action("[B] Back"))
     while True:
         try:
-            ans = ask_text("Choose:", to_lower=True)
+            ans = input("Choose: ").strip().lower()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning to file menu.")
             return None
@@ -321,19 +319,23 @@ def interactive_msf_search(plugin_url: str) -> None:
 
     # Offer to copy one to clipboard
     try:
-        ans = ask_number_or_none("Copy which one-liner to clipboard?", len(one_liners))
-        if ans is not None:
-            n = ans
-            if 1 <= n <= len(one_liners):
-                try:
-                    copy_to_clipboard(one_liners[n - 1])
-                except Exception:
+        from rich.prompt import Prompt
+        ans = Prompt.ask("Copy which one-liner to clipboard? (number or [N]one)", default="N")
+        if ans and ans.strip().lower() != "n":
+            try:
+                n = int(ans.strip())
+                if 1 <= n <= len(one_liners):
                     try:
-                        from .tools import copy_to_clipboard as _copy
-                        _copy(one_liners[n - 1])
+                        copy_to_clipboard(one_liners[n - 1])
                     except Exception:
-                        pass
-                ok("Copied to clipboard.")
+                        try:
+                            from .tools import copy_to_clipboard as _copy
+                            _copy(one_liners[n - 1])
+                        except Exception:
+                            pass
+                    ok("Copied to clipboard.")
+            except Exception:
+                warn("Invalid selection. No copy performed.")
     except Exception:
         pass
 
