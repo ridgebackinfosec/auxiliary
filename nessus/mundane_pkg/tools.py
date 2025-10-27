@@ -376,7 +376,7 @@ def _build_one_liners(term: str) -> List[str]:
 def show_msf_available(plugin_url: str) -> None:
     """Non-blocking informational notice shown after Plugin Details when file ends with '-MSF.txt'."""
     header("Metasploit module available!")
-    info("A Metasploit module may be available for this finding. Use the search prompt before running tools.\n")
+    info("Select \"metasploit\" in the tool menu to search for available modules.\n")
 
 def interactive_msf_search(plugin_url: str) -> None:
     """Fetch plugin page, extract candidate terms, display one-liners, offer copy-to-clipboard."""
