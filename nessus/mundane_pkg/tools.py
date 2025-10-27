@@ -274,14 +274,11 @@ def _build_one_liners(term: str) -> List[str]:
 
 def show_msf_available(plugin_url: str) -> None:
     """Non-blocking informational notice shown after Plugin Details when file ends with '-MSF.txt'."""
-    from .ansi import header, info
-    header("Metasploit module available")
-    info(f"[cyan]Plugin page:[/] {plugin_url}")
-    info("[bold yellow]A Metasploit module may be available for this finding. Use the search prompt before running tools.[/]\n")
+    header("Metasploit module available!")
+    info("A Metasploit module may be available for this finding. Use the search prompt before running tools.\n")
 
 def interactive_msf_search(plugin_url: str) -> None:
     """Fetch plugin page, extract candidate terms, display one-liners, offer copy-to-clipboard."""
-    from .ansi import header, info, warn, ok, fmt_action
     # copy_to_clipboard is defined in this module; import local symbol if needed
     header("Metasploit module search")
     if not requests or not BeautifulSoup:
