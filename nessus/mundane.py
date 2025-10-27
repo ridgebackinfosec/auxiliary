@@ -734,9 +734,6 @@ def main(args):
 
                     tool_used = False
                     while True:
-                        # If this file indicates an MSF module, offer to search for a module before choosing a tool
-                        if chosen.name.lower().endswith("-msf.txt"):
-                            from mundane_pkg import tools as _tools
                         tool_choice = choose_tool()
                         if tool_choice is None:
                             break
