@@ -2,6 +2,9 @@ from .ansi import header, warn, fmt_action, info, ok
 from .constants import NETEXEC_PROTOCOLS, NSE_PROFILES
 from pathlib import Path
 import pyperclip
+import requests
+from bs4 import beautifulsoup4
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 import os, sys, shutil, subprocess
 
@@ -172,3 +175,175 @@ def copy_to_clipboard(s: str) -> tuple:
         except Exception as e:
             return False, f'Clipboard error: {e}'
     return False, 'No suitable clipboard method found.'
+
+# ---------------------- Metasploit search helpers ----------------------
+import re
+from typing import List
+try:
+    import requests
+    from bs4 import BeautifulSoup
+except Exception:
+    requests = None
+    BeautifulSoup = None
+
+HEADERS = {"User-Agent": "mundane-msf-search/1.0 (+https://github.com/your-repo)"}
+PAREN_RE = re.compile(r"\(([^)]+)\)")
+MSF_AFTER_RE = re.compile(r"Metasploit[:\-\s]*\(?([^)]+)\)?", re.IGNORECASE)
+
+def _fetch_html(url: str, timeout: int = 12) -> str:
+    if not requests:
+        raise RuntimeError("requests library is not available")
+    resp = requests.get(url, headers=HEADERS, timeout=timeout)
+    resp.raise_for_status()
+    return resp.text
+
+def _extract_candidates_from_text(text: str) -> List[str]:
+    candidates: List[str] = []
+    for m in PAREN_RE.finditer(text):
+        inner = m.group(1).strip()
+        if len(inner) > 3 and not inner.lower().startswith("http"):
+            candidates.append(inner)
+    m2 = MSF_AFTER_RE.search(text)
+    if m2:
+        val = m2.group(1).strip()
+        if val and val not in candidates:
+            candidates.append(val)
+    if not candidates:
+        idx = text.lower().find("metasploit")
+        if idx != -1:
+            tail = text[idx : idx + 120]
+            tail = re.sub(r"\s+", " ", tail).strip()
+            tail = re.sub(r"(?i)metasploit[:\-\s]*", "", tail).strip()
+            if tail:
+                tail = re.split(r"[\|\-–—;:<>/\\]+", tail)[0].strip()
+                if tail and len(tail) > 3:
+                    candidates.append(tail)
+    seen = set()
+    uniq: List[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    return uniq
+
+def _find_search_terms_from_html(html: str) -> List[str]:
+    if not BeautifulSoup:
+        return []
+    soup = BeautifulSoup(html, "html.parser")
+    header_el = soup.find(
+        lambda tag: tag.name in ["h1", "h2", "h3", "h4", "h5"]
+        and "exploitable with" in tag.get_text(strip=True).lower()
+    )
+    terms: List[str] = []
+    if header_el:
+        nxt = header_el.find_next_sibling()
+        if nxt:
+            terms.extend(_extract_candidates_from_text(nxt.get_text(" ", strip=True)))
+        if not terms:
+            terms.extend(_extract_candidates_from_text(header_el.parent.get_text(" ", strip=True)))
+    if not terms:
+        ms_elems = soup.find_all(string=re.compile(r"\bMetasploit\b", re.I))
+        for s in ms_elems:
+            parent = s.parent
+            if parent:
+                terms.extend(_extract_candidates_from_text(parent.get_text(" ", strip=True)))
+                if not terms and parent.parent:
+                    terms.extend(_extract_candidates_from_text(parent.parent.get_text(" ", strip=True)))
+    if not terms:
+        all_text = soup.get_text(" ", strip=True)
+        for m in PAREN_RE.finditer(all_text):
+            p = m.group(1).strip()
+            if len(p) > 3 and re.search(r"[A-Za-z]", p):
+                if "metasploit" in p.lower() or p[0].isupper():
+                    terms.append(p)
+        terms = list(dict.fromkeys(terms))
+    cleaned = []
+    for t in terms:
+        tt = re.sub(r"\s+", " ", t).strip()
+        tt = tt.strip(" \n\t\"'.,:;")
+        if len(tt) > 2 and tt.lower() != "metasploit":
+            cleaned.append(tt)
+    return cleaned
+
+def _build_one_liners(term: str) -> List[str]:
+    if "'" in term:
+        cmd = f'msfconsole -q -x "search {term}; exit"'
+        cmd2 = f'msfconsole -q -x "search type:exploit {term}; exit"'
+    else:
+        cmd = f"msfconsole -q -x 'search {term}; exit'"
+        cmd2 = f"msfconsole -q -x 'search type:exploit {term}; exit'"
+    return [cmd, cmd2]
+
+def show_msf_available(plugin_url: str) -> None:
+    """Non-blocking informational notice shown after Plugin Details when file ends with '-MSF.txt'."""
+    from .ansi import header, info
+    header("Metasploit module available")
+    info(f"[cyan]Plugin page:[/] {plugin_url}")
+    info("[bold yellow]A Metasploit module may be available for this finding. Use the search prompt before running tools.[/]\n")
+
+def interactive_msf_search(plugin_url: str) -> None:
+    """Fetch plugin page, extract candidate terms, display one-liners, offer copy-to-clipboard."""
+    from .ansi import header, info, warn, ok, fmt_action
+    # copy_to_clipboard is defined in this module; import local symbol if needed
+    header("Metasploit module search")
+    if not requests or not BeautifulSoup:
+        warn("Required libraries (requests, beautifulsoup4) are not installed; cannot perform MSF search.")
+        return
+    # show a spinner/short progress bar while fetching the plugin page
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            TimeElapsedColumn(),
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Fetching plugin page...", start=False)
+            # start the task so spinner appears; total is not used (indeterminate)
+            progress.start_task(task)
+            html = _fetch_html(plugin_url)
+    except Exception as exc:
+        warn(f"Failed to fetch plugin page: {exc}")
+        return
+
+    terms = _find_search_terms_from_html(html)
+    if not terms:
+        warn("No candidate Metasploit search terms found on the page.")
+        return
+
+    info("Found candidate search term(s):")
+    for i, t in enumerate(terms, 1):
+        info(f" {i}. {t}")
+
+    info("\nSuggested msfconsole one-liner(s):")
+    one_liners = []
+    for t in terms:
+        one_liners.extend(_build_one_liners(t))
+
+    for i, cmd in enumerate(one_liners, 1):
+        info(f" {i}. {fmt_action(cmd)}")
+
+    # Offer to copy one to clipboard
+    try:
+        from rich.prompt import Prompt
+        ans = Prompt.ask("Copy which one-liner to clipboard? (number or [N]one)", default="N")
+        if ans and ans.strip().lower() != "n":
+            try:
+                n = int(ans.strip())
+                if 1 <= n <= len(one_liners):
+                    try:
+                        copy_to_clipboard(one_liners[n - 1])
+                    except Exception:
+                        try:
+                            from .tools import copy_to_clipboard as _copy
+                            _copy(one_liners[n - 1])
+                        except Exception:
+                            pass
+                    ok("Copied to clipboard.")
+            except Exception:
+                warn("Invalid selection. No copy performed.")
+    except Exception:
+        pass
+
+# ----------------------------------------------------------------------
+# End of MSF helpers
+# ----------------------------------------------------------------------

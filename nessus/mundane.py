@@ -56,6 +56,7 @@ import typer
 from rich.console import Console
 from rich.traceback import install as rich_tb_install
 from rich.progress import Progress, SpinnerColumn, TextColumn as ProgTextColumn, TimeElapsedColumn
+from rich.prompt import Confirm
 
 # Create a console for the interactive flow
 _console_global = Console()
@@ -620,6 +621,16 @@ def main(args):
                     _pd_line = _plugin_details_line(chosen)
                     if _pd_line:
                         info(_pd_line)
+                        # robustly extract the first http(s) URL from the line (if present)
+                        try:
+                            m = re.search(r"(https?://[^\s)\]\}>,;]+)", _pd_line)
+                            plugin_url = m.group(1) if m else None
+                        except Exception:
+                            plugin_url = None
+
+                        if chosen.name.lower().endswith("-msf.txt") and plugin_url:
+                            from mundane_pkg import tools as _tools
+                            _tools.show_msf_available(plugin_url)
                     info(f"Hosts parsed: {len(hosts)}")
                     if hosts:
                         info(f"Example host: {hosts[0]}")
@@ -723,6 +734,21 @@ def main(args):
 
                     tool_used = False
                     while True:
+                        # If this file indicates an MSF module, offer to search for a module before choosing a tool
+                        if chosen.name.lower().endswith("-msf.txt"):
+                            from mundane_pkg import tools as _tools
+                            try:
+                                if Confirm.ask("Search for available Metasploit module?"):
+                                    try:
+                                        plugin_url = _pd_line.split()[-1] if _pd_line else None
+                                    except Exception:
+                                        plugin_url = None
+                                    if plugin_url:
+                                        _tools.interactive_msf_search(plugin_url)
+                            except KeyboardInterrupt:
+                                # user aborted the prompt; continue to tool menu
+                                pass
+
                         tool_choice = choose_tool()
                         if tool_choice is None:
                             break
@@ -1132,6 +1158,14 @@ def main(args):
                 _pd_line = _plugin_details_line(chosen)
                 if _pd_line:
                     info(_pd_line)
+                    try:
+                        plugin_url = _pd_line.split()[-1] if _pd_line else None
+                    except Exception:
+                        plugin_url = None
+                    # If selected filename ends with '-MSF.txt', show MSF notice, using the plugin URL
+                    if chosen.name.lower().endswith("-msf.txt") and plugin_url:
+                        from mundane_pkg import tools as _tools
+                        _tools.show_msf_available(plugin_url)
                 info(f"Hosts parsed: {len(hosts)}")
                 if hosts:
                     info(f"Example host: {hosts[0]}")
@@ -1235,6 +1269,21 @@ def main(args):
 
                 tool_used = False
                 while True:
+                    # If this file indicates an MSF module, offer to search for a module before choosing a tool
+                    if chosen.name.lower().endswith("-msf.txt"):
+                        from mundane_pkg import tools as _tools
+                        try:
+                            if Confirm.ask("Search for available Metasploit module?"):
+                                try:
+                                    plugin_url = _pd_line.split()[-1] if _pd_line else None
+                                except Exception:
+                                    plugin_url = None
+                                if plugin_url:
+                                    _tools.interactive_msf_search(plugin_url)
+                        except KeyboardInterrupt:
+                            # user aborted the prompt; continue to tool menu
+                            pass
+
                     tool_choice = choose_tool()
                     if tool_choice is None:
                         break
