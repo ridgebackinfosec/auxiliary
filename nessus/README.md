@@ -2,9 +2,6 @@
 
 A modernized **TUI helper** to review Nessus plugin host files quickly and kick off focused checks with **nmap**, **NetExec**, or custom commands. Includes a one-step **wizard** to seed an export structure directly from a `.nessus` file.
 
-- **Status:** Phases 1–6 complete (env config, sudo preflight + prompt defaults, canonical parser + cache, data/render separation, tool registry foundation, logging + timing).
-- **Defaults preserved:** CLI flags, prompts, and outputs are unchanged.
-
 ---
 
 ## Requirements
