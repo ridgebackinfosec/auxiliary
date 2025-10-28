@@ -1,38 +1,144 @@
+"""ANSI color code formatting and console output utilities.
+
+This module provides ANSI color codes and helper functions for colorized
+console output. It respects the NO_COLOR environment variable for accessibility.
+"""
+
 import os
 
-# ========== Colors & helpers ==========
-NO_COLOR = (os.environ.get("NO_COLOR") is not None) or (os.environ.get("TERM") == "dumb")
+
+# ========== Color configuration ==========
+NO_COLOR: bool = (os.environ.get("NO_COLOR") is not None) or (
+    os.environ.get("TERM") == "dumb"
+)
+"""Disable colors if NO_COLOR env var is set or terminal is 'dumb'."""
+
 
 class C:
-    RESET  = "" if NO_COLOR else "\u001b[0m"
-    BOLD   = "" if NO_COLOR else "\u001b[1m"
-    BLUE   = "" if NO_COLOR else "\u001b[34m"
-    GREEN  = "" if NO_COLOR else "\u001b[32m"
-    YELLOW = "" if NO_COLOR else "\u001b[33m"
-    RED    = "" if NO_COLOR else "\u001b[31m"
-    CYAN   = "" if NO_COLOR else "\u001b[36m"
-    MAGENTA= "" if NO_COLOR else "\u001b[35m"
+    """ANSI color code constants.
 
-def header(msg): print(f"{C.BOLD}{C.BLUE}\n{msg}{C.RESET}")
-def ok(msg):     print(f"{C.GREEN}{msg}{C.RESET}")
-def warn(msg):   print(f"{C.YELLOW}{msg}{C.RESET}")
-def err(msg):    print(f"{C.RED}{msg}{C.RESET}")
-def info(msg):   print(msg)
-def fmt_action(text): return f"{C.CYAN}>> {text}{C.RESET}"
-def fmt_reviewed(text): return f"{C.MAGENTA}{text}{C.RESET}"
-def cyan_label(s: str) -> str: return f"{C.CYAN}{s}{C.RESET}"
+    Provides escape codes for terminal colors and formatting.
+    All codes evaluate to empty strings when NO_COLOR is enabled.
+    """
+
+    RESET: str = "" if NO_COLOR else "\u001b[0m"
+    BOLD: str = "" if NO_COLOR else "\u001b[1m"
+    BLUE: str = "" if NO_COLOR else "\u001b[34m"
+    GREEN: str = "" if NO_COLOR else "\u001b[32m"
+    YELLOW: str = "" if NO_COLOR else "\u001b[33m"
+    RED: str = "" if NO_COLOR else "\u001b[31m"
+    CYAN: str = "" if NO_COLOR else "\u001b[36m"
+    MAGENTA: str = "" if NO_COLOR else "\u001b[35m"
+
+
+def header(msg: str) -> None:
+    """Print a bold blue header message with newline prefix.
+
+    Args:
+        msg: The message to print as a header
+    """
+    print(f"{C.BOLD}{C.BLUE}\n{msg}{C.RESET}")
+
+
+def ok(msg: str) -> None:
+    """Print a success message in green.
+
+    Args:
+        msg: The success message to print
+    """
+    print(f"{C.GREEN}{msg}{C.RESET}")
+
+
+def warn(msg: str) -> None:
+    """Print a warning message in yellow.
+
+    Args:
+        msg: The warning message to print
+    """
+    print(f"{C.YELLOW}{msg}{C.RESET}")
+
+
+def err(msg: str) -> None:
+    """Print an error message in red.
+
+    Args:
+        msg: The error message to print
+    """
+    print(f"{C.RED}{msg}{C.RESET}")
+
+
+def info(msg: str) -> None:
+    """Print an informational message without color.
+
+    Args:
+        msg: The informational message to print
+    """
+    print(msg)
+
+
+def fmt_action(text: str) -> str:
+    """Format text as an action with cyan color and >> prefix.
+
+    Args:
+        text: The action text to format
+
+    Returns:
+        Formatted action string with color codes
+    """
+    return f"{C.CYAN}>> {text}{C.RESET}"
+
+
+def fmt_reviewed(text: str) -> str:
+    """Format text as reviewed content in magenta.
+
+    Args:
+        text: The text to format as reviewed
+
+    Returns:
+        Formatted string with magenta color codes
+    """
+    return f"{C.MAGENTA}{text}{C.RESET}"
+
+
+def cyan_label(s: str) -> str:
+    """Format a string with cyan color.
+
+    Args:
+        s: The string to colorize
+
+    Returns:
+        String wrapped in cyan ANSI codes
+    """
+    return f"{C.CYAN}{s}{C.RESET}"
+
 
 def colorize_severity_label(label: str) -> str:
-    L = label.strip().lower()
-    if "critical" in L:
+    """Colorize a severity label based on its level.
+
+    Maps severity levels to colors:
+    - Critical: Red
+    - High: Yellow
+    - Medium: Blue
+    - Low: Green
+    - Info: Cyan
+    - Other: Magenta
+
+    Args:
+        label: The severity label to colorize
+
+    Returns:
+        Bold, colorized severity label string
+    """
+    normalized_label = label.strip().lower()
+    if "critical" in normalized_label:
         color = C.RED
-    elif "high" in L:
+    elif "high" in normalized_label:
         color = C.YELLOW
-    elif "medium" in L:
+    elif "medium" in normalized_label:
         color = C.BLUE
-    elif "low" in L:
+    elif "low" in normalized_label:
         color = C.GREEN
-    elif "info" in L:
+    elif "info" in normalized_label:
         color = C.CYAN
     else:
         color = C.MAGENTA

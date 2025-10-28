@@ -76,27 +76,23 @@ from mundane_pkg import (
     count_reviewed_in_scan,
 )
 
-import re
-import random
-import shutil
-import tempfile
-import subprocess
+# === Standard library imports ===
 import ipaddress
-import types
 import math
+import random
+import re
+import shutil
+import subprocess
+import tempfile
+import types
 from collections import Counter
-from typing import Any, Optional, Tuple, List, Dict, Callable, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-# === Required dependencies (no fallbacks) ===
+# === Third-party imports ===
 import typer
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.traceback import install as rich_tb_install
-from rich.progress import (
-    Progress,
-    SpinnerColumn,
-    TextColumn as ProgTextColumn,
-    TimeElapsedColumn,
-)
 
 # === Constants ===
 MAX_FILE_BYTES = 2_000_000
@@ -398,7 +394,7 @@ def show_scan_summary(scan_dir: Path, top_ports_n: int = DEFAULT_TOP_PORTS) -> N
 
     with Progress(
         SpinnerColumn(style="cyan"),
-        ProgTextColumn("[progress.description]{task.description}"),
+        TextColumn("[progress.description]{task.description}"),
         TimeElapsedColumn(),
         console=_console_global,
         transient=True,
@@ -816,7 +812,7 @@ def run_tool_workflow(
 
     with Progress(
         SpinnerColumn(style="cyan"),
-        ProgTextColumn("[progress.description]{task.description}"),
+        TextColumn("[progress.description]{task.description}"),
         TimeElapsedColumn(),
         console=_console_global,
         transient=True,
@@ -1162,7 +1158,7 @@ def handle_file_list_actions(
             if missing:
                 with Progress(
                     SpinnerColumn(style="cyan"),
-                    ProgTextColumn("[progress.description]{task.description}"),
+                    TextColumn("[progress.description]{task.description}"),
                     TimeElapsedColumn(),
                     console=_console_global,
                     transient=True,
@@ -1569,7 +1565,7 @@ def browse_file_list(
             renamed = 0
             with Progress(
                 SpinnerColumn(style="cyan"),
-                ProgTextColumn("[progress.description]{task.description}"),
+                TextColumn("[progress.description]{task.description}"),
                 TimeElapsedColumn(),
                 console=_console_global,
                 transient=True,
