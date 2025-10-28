@@ -514,9 +514,12 @@ def _build_custom_workflow(tcp_ips, udp_ips, tcp_sockets, ports_str, workdir, re
 # ========== REFACTORED: File processing workflow ==========
 def process_single_file(chosen: Path, scan_dir: Path, sev_dir: Path, args, use_sudo: bool,
                        skipped_total: List[str], reviewed_total: List[str], 
-                       completed_total: List[str]):
+                       completed_total: List[str], show_severity: bool = False):
     """
     Unified file processing workflow - handles preview, view, tools, and completion marking.
+    
+    Args:
+        show_severity: If True, display severity label after filename (for MSF mode)
     """
     lines = read_text_lines(chosen)
     tokens = [ln for ln in lines if ln.strip()]
@@ -527,7 +530,10 @@ def process_single_file(chosen: Path, scan_dir: Path, sev_dir: Path, args, use_s
 
     hosts, ports_str = parse_hosts_ports(tokens)
     header("Preview")
-    info(f"File: {chosen.name}")
+    if show_severity:
+        info(f"File: {chosen.name}  — {pretty_severity_label(sev_dir.name)}")
+    else:
+        info(f"File: {chosen.name}")
     _pd_line = _plugin_details_line(chosen)
     if _pd_line:
         info(_pd_line)
@@ -608,7 +614,9 @@ def handle_file_list_actions(
     page_idx: int,
     total_pages: int,
     reviewed: List[Path],
-    sev_map: Optional[Dict[Path, Path]] = None
+    sev_map: Optional[Dict[Path, Path]] = None,
+    get_counts_for: Optional[Callable] = None,
+    file_parse_cache: Optional[Dict] = None
 ) -> Tuple[Optional[str], str, str, Optional[Tuple[int, set]], str, int]:
     """
     Unified handler for file list actions (filter, sort, navigate, etc.)
@@ -656,6 +664,21 @@ def handle_file_list_actions(
     if ans == "o":
         sort_mode = "hosts" if sort_mode == "name" else "name"
         ok(f"Sorting by {'host count (desc)' if sort_mode=='hosts' else 'name (A↑Z)'}")
+        # Pre-load host counts AFTER switching to hosts mode (matching original behavior)
+        if sort_mode == "hosts":
+            missing = [p for p in candidates if p not in file_parse_cache]
+            if missing:
+                with Progress(
+                    SpinnerColumn(style="cyan"),
+                    ProgTextColumn("[progress.description]{task.description}"),
+                    TimeElapsedColumn(),
+                    console=_console_global,
+                    transient=True,
+                ) as progress:
+                    task = progress.add_task("Counting hosts in files...", total=len(missing))
+                    for p in missing:
+                        _ = get_counts_for(p)
+                        progress.advance(task)
         page_idx = 0
         return None, file_filter, reviewed_filter, group_filter, sort_mode, page_idx
     
@@ -712,22 +735,10 @@ def handle_file_list_actions(
             info("Canceled.")
             return None, file_filter, reviewed_filter, group_filter, sort_mode, page_idx
         
-        renamed = 0
-        with Progress(
-            SpinnerColumn(style="cyan"),
-            ProgTextColumn("[progress.description]{task.description}"),
-            TimeElapsedColumn(),
-            console=_console_global,
-            transient=True,
-        ) as progress:
-            task = progress.add_task("Marking files as REVIEW_COMPLETE...", total=len(candidates))
-            for f in candidates:
-                newp = rename_review_complete(f)
-                if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
-                    renamed += 1
-                progress.advance(task)
-        ok(f"Summary: {renamed} renamed, {len(candidates)-renamed} skipped.")
-        return None, file_filter, reviewed_filter, group_filter, sort_mode, page_idx
+        # Need access to completed_total - this is a problem!
+        # The action handler doesn't have access to the tracking lists
+        # We need to handle 'M' action differently
+        return "mark_all", file_filter, reviewed_filter, group_filter, sort_mode, page_idx
     
     if ans == "h":
         if not candidates:
@@ -885,28 +896,13 @@ def browse_file_list(
             warn("\nInterrupted — returning to severity menu.")
             break
 
-        # Pre-sort loading if switching to host count sort
-        if ans == "o" and sort_mode == "name":
-            missing = [p for p in candidates if p not in file_parse_cache]
-            if missing:
-                with Progress(
-                    SpinnerColumn(style="cyan"),
-                    ProgTextColumn("[progress.description]{task.description}"),
-                    TimeElapsedColumn(),
-                    console=_console_global,
-                    transient=True,
-                ) as progress:
-                    task = progress.add_task("Counting hosts in files...", total=len(missing))
-                    for p in missing:
-                        _ = get_counts_for(p)
-                        progress.advance(task)
-
-        # Handle actions
+        # Handle actions (note: sort mode pre-loading is now inside handle_file_list_actions)
         action_result = handle_file_list_actions(
             ans, candidates, page_items, display, 
             file_filter, reviewed_filter, group_filter, 
             sort_mode, page_idx, total_pages, reviewed,
-            sev_map if is_msf_mode else None
+            sev_map if is_msf_mode else None,
+            get_counts_for, file_parse_cache  # Pass these for sort pre-loading
         )
         
         action_type, file_filter, reviewed_filter, group_filter, sort_mode, page_idx = action_result
@@ -914,6 +910,25 @@ def browse_file_list(
         if action_type == "back":
             break
         elif action_type == "help":
+            continue
+        elif action_type == "mark_all":
+            # Handle bulk marking here where we have access to completed_total
+            renamed = 0
+            with Progress(
+                SpinnerColumn(style="cyan"),
+                ProgTextColumn("[progress.description]{task.description}"),
+                TimeElapsedColumn(),
+                console=_console_global,
+                transient=True,
+            ) as progress:
+                task = progress.add_task("Marking files as REVIEW_COMPLETE...", total=len(candidates))
+                for f in candidates:
+                    newp = rename_review_complete(f)
+                    if newp != f or newp.name.startswith("REVIEW_COMPLETE-"):
+                        renamed += 1
+                        completed_total.append(newp.name)
+                    progress.advance(task)
+            ok(f"Summary: {renamed} renamed, {len(candidates)-renamed} skipped.")
             continue
         elif action_type == "file_selected":
             # Determine which file was selected
@@ -929,7 +944,8 @@ def browse_file_list(
             # Process the file
             process_single_file(
                 chosen, scan_dir, chosen_sev_dir, args, use_sudo,
-                skipped_total, reviewed_total, completed_total
+                skipped_total, reviewed_total, completed_total,
+                show_severity=is_msf_mode
             )
         elif action_type is None:
             continue
