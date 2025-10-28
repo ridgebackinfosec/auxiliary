@@ -306,40 +306,6 @@ def choose_from_list(
 
 # === Scan overview helpers ===
 
-def _parse_index_selection(selection: str, max_index: int) -> List[int]:
-    """
-    Parse a selection like "3", "1-3", "1-3,5" into sorted unique 1-based indices.
-    Returns [] for Back ("", "b", "back"). Values are clamped to 1..max_index.
-    Raises ValueError for invalid tokens.
-    """
-    if selection is None:
-        raise ValueError("Empty selection")
-    s = selection.strip().lower()
-    if s in ("", "b", "back"):
-        return []
-    out: set[int] = set()
-    for part in s.split(","):
-        token = part.strip()
-        if not token:
-            continue
-        if "-" in token:
-            a_str, b_str = [t.strip() for t in token.split("-", 1)]
-            if not (a_str.isdigit() and b_str.isdigit()):
-                raise ValueError(f"Invalid token in selection: {token!r}")
-            a, b = int(a_str), int(b_str)
-            if a > b:
-                a, b = b, a
-            a = max(1, a)
-            b = min(max_index, b)
-            for i in range(a, b + 1):
-                out.add(i)
-        else:
-            if not token.isdigit():
-                raise ValueError(f"Invalid token in selection: {token!r}")
-            i = max(1, min(max_index, int(token)))
-            out.add(i)
-    return sorted(out)
-
 
 def show_scan_summary(scan_dir: Path, top_ports_n: int = DEFAULT_TOP_PORTS) -> None:
     """
@@ -1691,91 +1657,74 @@ def main(args: types.SimpleNamespace) -> None:
             print(fmt_action("[B] Back"))
 
             try:
-                raw = input("Choose: ").strip()
+                ans = input("Choose: ").strip().lower()
             except KeyboardInterrupt:
                 warn("\nInterrupted — returning to scan menu.")
                 break
 
-            if raw.lower() in ("b", "back"):
+            if ans in ("b", "back"):
                 break
 
             options_count = len(severities) + (1 if has_msf else 0)
-            try:
-                selected_ids = _parse_index_selection(raw, options_count)
-            except ValueError as e:
-                warn(str(e))
+            if not ans.isdigit() or not (1 <= int(ans) <= options_count):
+                warn("Invalid choice.")
                 continue
 
-            if not selected_ids:
-                # Back / empty
-                break
+            choice_idx = int(ans)
 
-            # === Selected severities (single or multiple) ===
-            include_msf = False
-            selected_sev_dirs: List[Path] = []
-            for idx_sel in selected_ids:
-                if has_msf and idx_sel == len(severities) + 1:
-                    include_msf = True
-                    continue
-                if 1 <= idx_sel <= len(severities):
-                    selected_sev_dirs.append(severities[idx_sel - 1])
+            # === Normal severity selected ===
+            if choice_idx <= len(severities):
+                sev_dir = severities[choice_idx - 1]
 
-            if not selected_sev_dirs and not include_msf:
-                warn("No valid severity selected.")
-                continue
+                def files_getter() -> List[Tuple[Path, Path]]:
+                    """Get files for normal severity directory."""
+                    files = [
+                        file
+                        for file in list_files(sev_dir)
+                        if file.suffix.lower() == ".txt"
+                    ]
+                    return [(file, sev_dir) for file in files]
 
-            def combined_files_getter() -> List[Tuple[Path, Path]]:
-                files: List[Tuple[Path, Path]] = []
-                seen: set[Tuple[str, str]] = set()
-                # add files from chosen severities
-                for sdir in selected_sev_dirs:
-                    for file in list_files(sdir):
-                        if file.suffix.lower() != ".txt":
-                            continue
-                        key = (str(file.resolve()), str(sdir.resolve()))
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        files.append((file, sdir))
-                # add virtual MSF files if selected
-                if include_msf:
-                    for sdir in severities:
-                        for file in list_files(sdir):
-                            if file.suffix.lower() == ".txt" and file.name.endswith("-MSF.txt"):
-                                key = (str(file.resolve()), str(sdir.resolve()))
-                                if key in seen:
-                                    continue
-                                seen.add(key)
-                                files.append((file, sdir))
-                return files
+                browse_file_list(
+                    scan_dir,
+                    sev_dir,
+                    files_getter,
+                    pretty_severity_label(sev_dir.name),
+                    args,
+                    use_sudo,
+                    skipped_total,
+                    reviewed_total,
+                    completed_total,
+                    is_msf_mode=False,
+                )
 
-            # label & placeholder for UI
-            if len(selected_sev_dirs) == 1 and not include_msf:
-                sev_label = pretty_severity_label(selected_sev_dirs[0].name)
-                placeholder_sev = selected_sev_dirs[0]
-                msf_mode = False
+            # === Metasploit Module (virtual) ===
             else:
-                names = [pretty_severity_label(s.name) for s in selected_sev_dirs]
-                label = ", ".join(names) if names else ""
-                if include_msf:
-                    sev_label = f"Multiple ({label}) + Metasploit Module" if label else "Metasploit Module"
-                else:
-                    sev_label = f"Multiple ({label})"
-                placeholder_sev = selected_sev_dirs[0] if selected_sev_dirs else severities[0]
-                msf_mode = True
 
-            browse_file_list(
-                scan_dir,
-                placeholder_sev,
-                combined_files_getter,
-                sev_label,
-                args,
-                use_sudo,
-                skipped_total,
-                reviewed_total,
-                completed_total,
-                is_msf_mode=msf_mode,
-            )
+                def msf_files_getter() -> List[Tuple[Path, Path]]:
+                    """Get MSF files from all severity directories."""
+                    msf_files = []
+                    for severity_dir in severities:
+                        for file in list_files(severity_dir):
+                            if (
+                                file.suffix.lower() == ".txt"
+                                and file.name.endswith("-MSF.txt")
+                            ):
+                                msf_files.append((file, severity_dir))
+                    return msf_files
+
+                browse_file_list(
+                    scan_dir,
+                    severities[0],  # Placeholder, won't be used
+                    msf_files_getter,
+                    "Metasploit Module",
+                    args,
+                    use_sudo,
+                    skipped_total,
+                    reviewed_total,
+                    completed_total,
+                    is_msf_mode=True,
+                )
 
     # Session summary
     header("Session Summary")
