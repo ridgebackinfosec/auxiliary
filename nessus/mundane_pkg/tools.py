@@ -1,391 +1,858 @@
-from .ansi import header, warn, fmt_action, info, ok
-from .constants import NETEXEC_PROTOCOLS, NSE_PROFILES
+"""
+Network security tooling automation and command generation.
+
+This module provides utilities for building and executing commands for
+various security tools including nmap, netexec, and metasploit.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
+from typing import Any, Callable, Optional
+
 import pyperclip
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.prompt import Prompt
 
-import os, sys, shutil, subprocess
-import json
+from .ansi import fmt_action, header, info, ok, warn
+from .constants import NETEXEC_PROTOCOLS, NSE_PROFILES
 
-def choose_nse_profile():
+# Optional dependencies for Metasploit search
+try:
+    import requests
+    from bs4 import BeautifulSoup, Tag
+    METASPLOIT_DEPS_AVAILABLE = True
+except ImportError:
+    requests = None  # type: ignore
+    BeautifulSoup = None  # type: ignore
+    Tag = None  # type: ignore
+    METASPLOIT_DEPS_AVAILABLE = False
+
+
+# Constants
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/141.0.0.0 Safari/537.36"
+)
+HTTP_HEADERS = {"User-Agent": USER_AGENT}
+HTTP_TIMEOUT = 12
+PARENTHESIS_PATTERN = re.compile(r"\(([^)]+)\)")
+MSF_PATTERN = re.compile(r"Metasploit[:\-\s]*\(?([^)]+)\)?", re.IGNORECASE)
+SEARCH_WINDOW_SIZE = 800
+MIN_TERM_LENGTH = 2
+
+
+# ========== NSE Profile Selection ==========
+
+def choose_nse_profile() -> tuple[list[str], bool]:
+    """
+    Prompt user to select an NSE (Nmap Scripting Engine) profile.
+    
+    Returns:
+        Tuple of (script_list, needs_udp) where script_list contains
+        the selected NSE scripts and needs_udp indicates if UDP scanning
+        is required.
+    """
     header("NSE Profiles")
-    for i, (name, scripts, _) in enumerate(NSE_PROFILES, 1):
-        print(f"[{i}] {name} ({', '.join(scripts)})")
+    for index, (name, scripts, _) in enumerate(NSE_PROFILES, 1):
+        print(f"[{index}] {name} ({', '.join(scripts)})")
     print(fmt_action("[N] None (no NSE profile)"))
     print(fmt_action("[B] Back"))
+    
     while True:
         try:
-            ans = input("Choose: ").strip().lower()
+            answer = input("Choose: ").strip().lower()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning to file menu.")
             return [], False
-        if ans in ("b", "back"):
+        
+        if answer in ("b", "back"):
             return [], False
-        if ans in ("n", "none", ""):
+        
+        if answer in ("n", "none", ""):
             return [], False
-        if ans.isdigit():
-            i = int(ans)
-            if 1 <= i <= len(NSE_PROFILES):
-                name, scripts, needs_udp = NSE_PROFILES[i-1]
-                ok(f"Selected profile: {name} — including: {', '.join(scripts)}")
+        
+        if answer.isdigit():
+            profile_index = int(answer)
+            if 1 <= profile_index <= len(NSE_PROFILES):
+                name, scripts, needs_udp = NSE_PROFILES[profile_index - 1]
+                ok(
+                    f"Selected profile: {name} — "
+                    f"including: {', '.join(scripts)}"
+                )
                 return scripts[:], needs_udp
+        
         warn("Invalid choice.")
 
-def build_nmap_cmd(udp, nse_option, ips_file, ports_str, use_sudo, oabase: Path):
+
+# ========== Command Builders ==========
+
+def build_nmap_cmd(
+    udp: bool,
+    nse_option: Optional[str],
+    ips_file: Path,
+    ports_str: str,
+    use_sudo: bool,
+    output_base: Path,
+) -> list[str]:
+    """
+    Build an nmap command with the specified options.
+    
+    Args:
+        udp: Whether to perform UDP scanning
+        nse_option: NSE script option string (e.g., "--script=...")
+        ips_file: Path to file containing IP addresses
+        ports_str: Port specification string
+        use_sudo: Whether to run with sudo
+        output_base: Base path for output files
+        
+    Returns:
+        Command as list of strings ready for subprocess execution
+    """
     cmd = []
+    
     if use_sudo:
         cmd.append("sudo")
-    cmd += ["nmap", "-A"]
+    
+    cmd.extend(["nmap", "-A"])
+    
     if nse_option:
         cmd.append(nse_option)
-    cmd += ["-iL", str(ips_file)]
+    
+    cmd.extend(["-iL", str(ips_file)])
+    
     if udp:
         cmd.append("-sU")
+    
     if ports_str:
-        cmd += ["-p", ports_str]
-    cmd += ["-oA", str(oabase)]
+        cmd.extend(["-p", ports_str])
+    
+    cmd.extend(["-oA", str(output_base)])
+    
     return cmd
 
-def build_netexec_cmd(exec_bin: str, protocol: str, ips_file: Path, oabase: Path):
-    log_path = f"{str(oabase)}.nxc.{protocol}.log"
+
+def build_netexec_cmd(
+    exec_bin: str,
+    protocol: str,
+    ips_file: Path,
+    output_base: Path,
+) -> tuple[list[str], str, Optional[str]]:
+    """
+    Build a netexec command for the specified protocol.
+    
+    Args:
+        exec_bin: Path to netexec binary
+        protocol: Protocol to scan (e.g., 'smb', 'ssh')
+        ips_file: Path to file containing IP addresses
+        output_base: Base path for output files
+        
+    Returns:
+        Tuple of (command, log_path, relay_path) where relay_path
+        is only set for SMB protocol
+    """
+    log_path = f"{str(output_base)}.nxc.{protocol}.log"
     relay_path = None
+    
     if protocol == "smb":
-        relay_path = f"{str(oabase)}.SMB_Signing_not_required_targets.txt"
+        relay_path = f"{str(output_base)}.SMB_Signing_not_required_targets.txt"
         cmd = [
-            exec_bin, "smb", str(ips_file),
-            "--gen-relay-list", relay_path,
+            exec_bin,
+            "smb",
+            str(ips_file),
+            "--gen-relay-list",
+            relay_path,
             "--shares",
-            "--log", log_path
+            "--log",
+            log_path,
         ]
     else:
         cmd = [exec_bin, protocol, str(ips_file), "--log", log_path]
+    
     return cmd, log_path, relay_path
 
-# ========== Tool selection ==========
-def choose_tool():
+
+# ========== Tool Selection ==========
+
+def choose_tool() -> Optional[str]:
+    """
+    Prompt user to select a security tool.
+    
+    Returns:
+        Tool name ('nmap', 'netexec', 'metasploit', 'custom') or
+        None if user cancels
+    """
     header("Choose a tool")
     print("[1] nmap")
     print("[2] netexec — multi-protocol")
     print("[3] metasploit — search for modules")
     print("[4] Custom command (advanced)")
     print(fmt_action("[B] Back"))
+    
     while True:
         try:
-            ans = input("Choose: ").strip().lower()
+            answer = input("Choose: ").strip().lower()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning to file menu.")
             return None
-        if ans in ("b", "back", ""):
-            return None if ans else "nmap"
-        if ans.isdigit():
-            i = int(ans)
-            if i == 1: return "nmap"
-            if i == 2: return "netexec"
-            if i == 3: return "metasploit"
-            if i == 4: return "custom"
+        
+        if answer in ("b", "back", ""):
+            return None if answer else "nmap"
+        
+        if answer.isdigit():
+            choice_index = int(answer)
+            tool_mapping = {
+                1: "nmap",
+                2: "netexec",
+                3: "metasploit",
+                4: "custom",
+            }
+            if choice_index in tool_mapping:
+                return tool_mapping[choice_index]
+        
         warn("Invalid choice.")
 
-def choose_netexec_protocol():
+
+def choose_netexec_protocol() -> Optional[str]:
+    """
+    Prompt user to select a netexec protocol.
+    
+    Returns:
+        Protocol name or None if user cancels. Defaults to 'smb'
+        if user presses Enter.
+    """
     header("NetExec: choose protocol")
-    for i, p in enumerate(NETEXEC_PROTOCOLS, 1):
-        print(f"[{i}] {p}")
+    for index, protocol in enumerate(NETEXEC_PROTOCOLS, 1):
+        print(f"[{index}] {protocol}")
     print(fmt_action("[B] Back"))
     print("(Press Enter for 'smb')")
+    
     while True:
         try:
-            ans = input("Choose protocol: ").strip().lower()
+            answer = input("Choose protocol: ").strip().lower()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning to file menu.")
             return None
-        if ans == "":
+        
+        if answer == "":
             return "smb"
-        if ans in ("b","back"):
+        
+        if answer in ("b", "back"):
             return None
-        if ans.isdigit():
-            idx = int(ans)
-            if 1 <= idx <= len(NETEXEC_PROTOCOLS):
-                return NETEXEC_PROTOCOLS[idx-1]
-        if ans in NETEXEC_PROTOCOLS:
-            return ans
+        
+        if answer.isdigit():
+            protocol_index = int(answer)
+            if 1 <= protocol_index <= len(NETEXEC_PROTOCOLS):
+                return NETEXEC_PROTOCOLS[protocol_index - 1]
+        
+        if answer in NETEXEC_PROTOCOLS:
+            return answer
+        
         warn("Invalid choice.")
 
-def custom_command_help(mapping: dict):
+
+# ========== Custom Command Handling ==========
+
+def custom_command_help(placeholder_mapping: dict[str, str]) -> None:
+    """
+    Display help information for custom command placeholders.
+    
+    Args:
+        placeholder_mapping: Dictionary mapping placeholder names to
+            their expanded values
+    """
     header("Custom command")
-    info("You can type any shell command. The placeholders below will be expanded:")
-    for k, v in mapping.items():
-        info(f"  {k:14s} -> {v}")
+    info(
+        "You can type any shell command. "
+        "The placeholders below will be expanded:"
+    )
+    for placeholder, value in placeholder_mapping.items():
+        info(f"  {placeholder:14s} -> {value}")
     print()
     info("Examples:")
     info("  httpx -l {TCP_IPS} -silent -o {OABASE}.urls.txt")
     info("  nuclei -l {OABASE}.urls.txt -o {OABASE}.nuclei.txt")
     info("  cat {TCP_IPS} | xargs -I{} sh -c 'echo {}; nmap -Pn -p {PORTS} {}'")
 
-def render_placeholders(template: str, mapping: dict) -> str:
-    s = template
-    for k, v in mapping.items():
-        s = s.replace(k, str(v))
-    return s
 
-def command_review_menu(cmd_list_or_str):
-    """Display a small menu: run / copy / cancel."""
+def render_placeholders(template: str, mapping: dict[str, str]) -> str:
+    """
+    Replace placeholders in template string with their values.
+    
+    Args:
+        template: String containing placeholders in {PLACEHOLDER} format
+        mapping: Dictionary mapping placeholder names to values
+        
+    Returns:
+        Template string with placeholders replaced
+    """
+    result = template
+    for placeholder, value in mapping.items():
+        result = result.replace(placeholder, str(value))
+    return result
+
+
+# ========== Command Review ==========
+
+def command_review_menu(cmd_list_or_str: list[str] | str) -> str:
+    """
+    Display command review menu and get user action.
+    
+    Args:
+        cmd_list_or_str: Command as list of strings or single string
+        
+    Returns:
+        User action: 'run', 'copy', or 'cancel'
+    """
     header("Command Review")
-    cmd_str = cmd_list_or_str if isinstance(cmd_list_or_str, str) else " ".join(cmd_list_or_str)
+    
+    if isinstance(cmd_list_or_str, str):
+        cmd_str = cmd_list_or_str
+    else:
+        cmd_str = " ".join(cmd_list_or_str)
+    
     print(cmd_str)
     print()
     print(fmt_action("[1] Run now"))
-    print(fmt_action("[2] Copy command to clipboard (don’t run)"))
+    print(fmt_action("[2] Copy command to clipboard (don't run)"))
     print(fmt_action("[3] Cancel"))
+    
     while True:
         try:
             choice = input("Choose: ").strip()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning to file menu.")
             return "cancel"
+        
         if choice in ("1", "r", "run"):
             return "run"
+        
         if choice in ("2", "c", "copy"):
             return "copy"
+        
         if choice in ("3", "x", "cancel"):
             return "cancel"
+        
         warn("Enter 1, 2, or 3.")
 
-def copy_to_clipboard(s: str) -> tuple:
-    """Clipboard via pyperclip; OS tool fallback if runtime environment blocks it."""
-    try:
-        pyperclip.copy(s)
-        return True, 'Copied using pyperclip.'
-    except Exception:
-        enc = s.encode('utf-8')
-        try:
-            if sys.platform.startswith('darwin') and shutil.which('pbcopy'):
-                subprocess.run(['pbcopy'], input=enc, check=True)
-                return True, 'Copied using pbcopy.'
-            if os.name == 'nt' and shutil.which('clip'):
-                subprocess.run(['clip'], input=enc, check=True)
-                return True, 'Copied using clip.'
-            for tool, args in (
-                ('xclip', ['xclip', '-selection', 'clipboard']),
-                ('wl-copy', ['wl-copy']),
-                ('xsel', ['xsel', '--clipboard', '--input']),
-            ):
-                if shutil.which(tool):
-                    subprocess.run(args, input=enc, check=True)
-                    return True, f'Copied using {tool}.'
-        except subprocess.CalledProcessError as e:
-            return False, f'Clipboard tool failed (exit {e.returncode}).'
-        except Exception as e:
-            return False, f'Clipboard error: {e}'
-    return False, 'No suitable clipboard method found.'
 
-# ---------------------- Metasploit search helpers ----------------------
-import re
-from typing import List
-try:
-    import requests
-    from bs4 import BeautifulSoup
-except Exception:
-    requests = None
-    BeautifulSoup = None
+# ========== Clipboard Operations ==========
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"}
-PAREN_RE = re.compile(r"\(([^)]+)\)")
-MSF_AFTER_RE = re.compile(r"Metasploit[:\-\s]*\(?([^)]+)\)?", re.IGNORECASE)
-
-def _fetch_html(url: str, timeout: int = 12) -> str:
-    if not requests:
-        raise RuntimeError("requests library is not available")
-    resp = requests.get(url, headers=HEADERS, timeout=timeout)
-    resp.raise_for_status()
-    return resp.text
-
-def _extract_candidates_from_text(text: str, soup=None) -> List[str]:
+def copy_to_clipboard(text: str) -> tuple[bool, str]:
     """
-    DOM-aware and text-based extractor for Metasploit candidate terms.
-    Priority:
-      1. If soup provided: find element(s) mentioning 'Metasploit' and inspect nearby siblings/children for parenthesized tokens.
-      2. Use MSF_AFTER_RE to capture text immediately following "Metasploit (...)"
-      3. Look for the first parenthesized token after the word 'metasploit' within a window.
-      4. Legacy fallback: scan all parenthesized tokens across the page.
-    Returns a de-duplicated list of cleaned candidate strings.
+    Copy text to clipboard using available methods.
+    
+    Tries pyperclip first, then falls back to OS-specific tools
+    (pbcopy, clip, xclip, wl-copy, xsel).
+    
+    Args:
+        text: Text to copy to clipboard
+        
+    Returns:
+        Tuple of (success, message) indicating whether copy succeeded
+        and describing the method used or error encountered
     """
-    def clean_token(t: str) -> str:
-        tt = re.sub(r"\\s+", " ", t).strip()
-        tt = tt.strip(" \\n\\t\"'.:;")
-        return tt
-
-    # 0) If soup is provided, prefer DOM traversal (scan nodes that contain 'Metasploit')
-    if soup is not None:
-        for string_node in soup.find_all(string=re.compile(r"metasploit", re.I)):
-            parent = string_node.parent
-            # 0a: Check same parent element text after the match
-            try:
-                inner = parent.get_text(" ", strip=True)
-                idx = inner.lower().find("metasploit")
-                if idx != -1:
-                    rest_inner = inner[idx: idx + 800]
-                    m_par = re.search(r"\\(\\s*([^)]+?)\\s*\\)", rest_inner)
-                    if m_par:
-                        val = m_par.group(1).strip()
-                        if val and not val.lower().startswith("http") and val.lower() != "metasploit":
-                            return [clean_token(val)]
-            except Exception:
-                pass
-            # 0b: Inspect next siblings for a parenthesized token
-            try:
-                for sib in parent.next_siblings:
-                    stext = ""
-                    if hasattr(sib, "get_text"):
-                        stext = sib.get_text(" ", strip=True)
-                    else:
-                        stext = str(sib).strip()
-                    m = re.search(r"\\(\\s*([^)]+?)\\s*\\)", stext)
-                    if m:
-                        val = m.group(1).strip()
-                        if val and not val.lower().startswith("http") and val.lower() != "metasploit":
-                            return [clean_token(val)]
-            except Exception:
-                pass
-
-    # 1) Direct regex match (Metasploit ( ... ) style)
-    m2 = MSF_AFTER_RE.search(text)
-    if m2:
-        val = m2.group(1).strip()
-        if val and not val.lower().startswith("http") and val.lower() != "metasploit":
-            return [clean_token(val)]
-
-    # 2) First parenthesis AFTER the word "metasploit" in a text window
-    idx = text.lower().find("metasploit")
-    if idx != -1:
-        window = text[idx: idx + 800]
-        m_par = re.search(r"\\(\\s*([^)]+?)\\s*\\)", window)
-        if m_par:
-            val = m_par.group(1).strip()
-            if val and not val.lower().startswith("http") and val.lower() != "metasploit":
-                return [clean_token(val)]
-
-    # 3) Legacy fallback: grab parenthesized fragments across the page
-    candidates: List[str] = []
-    for m in PAREN_RE.finditer(text):
-        inner = m.group(1).strip()
-        if len(inner) > 3 and not inner.lower().startswith("http"):
-            candidates.append(inner)
-
-    # Also include MSF_AFTER_RE bag if present and not already in candidates
-    if 'm2' in locals() and m2:
-        val = m2.group(1).strip()
-        if val and val not in candidates:
-            candidates.insert(0, val)
-
-    # Clean, dedupe, and filter
-    terms = list(dict.fromkeys(candidates))
-    cleaned = []
-    for t in terms:
-        tt = clean_token(t)
-        if len(tt) > 2 and tt.lower() != "metasploit":
-            cleaned.append(tt)
-    return cleaned
-def _find_search_terms_from_html(html: str) -> List[str]:
-
-    # --- Prefer structured page data when available (Next.js __NEXT_DATA__ JSON) ---
+    # Try pyperclip first
     try:
-        # soup is available in callers; try to locate the __NEXT_DATA__ script tag with JSON that includes plugin metadata
-        script = None
-        if 'soup' in locals() and getattr(soup, "find", None):
-            script = soup.find("script", {"id": "__NEXT_DATA__"})
-        else:
-            # fallback: search for the script by regex in raw html
-            m = re.search(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', html, flags=re.S)
-            if m:
-                script = type("S", (), {"string": m.group(1)})
-
-        if script and getattr(script, "string", None):
-            try:
-                data = json.loads(script.string)
-                # navigate to plugin metadata if present
-                plugin = data.get("props", {}).get("pageProps", {}).get("plugin")
-                if plugin and isinstance(plugin, dict):
-                    # prefer explicit metasploit_name field
-                    ms_name = plugin.get("metasploit_name")
-                    if ms_name and isinstance(ms_name, str) and ms_name.strip():
-                        return [ms_name.strip()]
-                    # otherwise inspect attributes list for metasploit_name attribute
-                    attrs = plugin.get("attributes") or plugin.get("attributes", [])
-                    if isinstance(attrs, list):
-                        for a in attrs:
-                            try:
-                                if a.get("attribute_name", "").lower() == "metasploit_name".lower():
-                                    val = a.get("attribute_value")
-                                    if val and isinstance(val, str) and val.strip():
-                                        return [val.strip()]
-                            except Exception:
-                                continue
-            except Exception:
-                # JSON parse failed; safe to ignore and continue to legacy extraction
-                pass
+        pyperclip.copy(text)
+        return True, "Copied using pyperclip."
     except Exception:
-        # Any error here should not break extraction; fall back to text-based methods
         pass
-    # --- End structured-data preference ---
-    if not BeautifulSoup:
-        return []
-    soup = BeautifulSoup(html, "html.parser")
-    header_el = soup.find(
+    
+    # Fall back to OS-specific tools
+    encoded_text = text.encode("utf-8")
+    clipboard_tools = []
+    
+    # macOS
+    if sys.platform.startswith("darwin") and shutil.which("pbcopy"):
+        clipboard_tools.append(("pbcopy", ["pbcopy"]))
+    
+    # Windows
+    if os.name == "nt" and shutil.which("clip"):
+        clipboard_tools.append(("clip", ["clip"]))
+    
+    # Linux/Unix
+    for tool, args in [
+        ("xclip", ["xclip", "-selection", "clipboard"]),
+        ("wl-copy", ["wl-copy"]),
+        ("xsel", ["xsel", "--clipboard", "--input"]),
+    ]:
+        if shutil.which(tool):
+            clipboard_tools.append((tool, args))
+    
+    # Try each available tool
+    for tool_name, tool_args in clipboard_tools:
+        try:
+            subprocess.run(
+                tool_args,
+                input=encoded_text,
+                check=True,
+                capture_output=True,
+            )
+            return True, f"Copied using {tool_name}."
+        except subprocess.CalledProcessError as exc:
+            return False, f"Clipboard tool failed (exit {exc.returncode})."
+        except Exception as exc:
+            return False, f"Clipboard error: {exc}"
+    
+    return False, "No suitable clipboard method found."
+
+
+# ========== Metasploit Search Helpers ==========
+
+def _fetch_html(url: str, timeout: int = HTTP_TIMEOUT) -> str:
+    """
+    Fetch HTML content from a URL.
+    
+    Args:
+        url: URL to fetch
+        timeout: Request timeout in seconds
+        
+    Returns:
+        HTML content as string
+        
+    Raises:
+        RuntimeError: If requests library is not available
+        requests.HTTPError: If HTTP request fails
+    """
+    if not METASPLOIT_DEPS_AVAILABLE:
+        raise RuntimeError("requests library is not available")
+    
+    response = requests.get(url, headers=HTTP_HEADERS, timeout=timeout)
+    response.raise_for_status()
+    return response.text
+
+
+def _clean_token(token: str) -> str:
+    """
+    Clean and normalize a candidate token.
+    
+    Args:
+        token: Raw token string
+        
+    Returns:
+        Cleaned token with normalized whitespace and stripped punctuation
+    """
+    cleaned = re.sub(r"\s+", " ", token).strip()
+    cleaned = cleaned.strip(" \n\t\"'.:;")
+    return cleaned
+
+
+def _is_valid_candidate(token: str) -> bool:
+    """
+    Check if a token is a valid Metasploit module candidate.
+    
+    Args:
+        token: Token to validate
+        
+    Returns:
+        True if token is valid, False otherwise
+    """
+    if not token:
+        return False
+    
+    if len(token) <= MIN_TERM_LENGTH:
+        return False
+    
+    if token.lower() == "metasploit":
+        return False
+    
+    if token.lower().startswith("http"):
+        return False
+    
+    return True
+
+
+def _extract_from_exploitable_header(soup: Any) -> list[str]:
+    """
+    Extract terms from 'exploitable with' header section.
+    
+    Args:
+        soup: BeautifulSoup parsed HTML
+        
+    Returns:
+        List of candidate terms found near exploitable header
+    """
+    # Look for header containing "exploitable with"
+    header_element = soup.find(
         lambda tag: tag.name in ["h1", "h2", "h3", "h4", "h5"]
         and "exploitable with" in tag.get_text(strip=True).lower()
     )
-    terms: List[str] = []
-    if header_el:
-        nxt = header_el.find_next_sibling()
-        if nxt:
-            terms.extend(_extract_candidates_from_text(nxt.get_text(" ", strip=True), soup=soup))
-        if not terms:
-            terms.extend(_extract_candidates_from_text(header_el.parent.get_text(" ", strip=True), soup=soup))
-    if not terms:
-        ms_elems = soup.find_all(string=re.compile(r"\bMetasploit\b", re.I))
-        for s in ms_elems:
-            parent = s.parent
-            if parent:
-                terms.extend(_extract_candidates_from_text(parent.get_text(" ", strip=True), soup=soup))
-                if not terms and parent.parent:
-                    terms.extend(_extract_candidates_from_text(parent.parent.get_text(" ", strip=True)))
-    if not terms:
-        all_text = soup.get_text(" ", strip=True)
-        for m in PAREN_RE.finditer(all_text):
-            p = m.group(1).strip()
-            if len(p) > 3 and re.search(r"[A-Za-z]", p):
-                if "metasploit" in p.lower() or p[0].isupper():
-                    terms.append(p)
-        terms = list(dict.fromkeys(terms))
+    
+    if not header_element:
+        return []
+    
+    terms = []
+    
+    # Check next sibling
+    next_sibling = header_element.find_next_sibling()
+    if next_sibling:
+        sibling_text = next_sibling.get_text(" ", strip=True)
+        terms.extend(_extract_from_text_patterns(sibling_text, soup=soup))
+    
+    # If no terms from sibling, check parent element
+    if not terms and header_element.parent:
+        parent_text = header_element.parent.get_text(" ", strip=True)
+        terms.extend(_extract_from_text_patterns(parent_text, soup=soup))
+    
+    return terms
+
+
+def _extract_from_dom_traversal(
+    soup: Any,
+) -> list[str]:
+    """
+    Extract Metasploit terms via DOM traversal around 'Metasploit' mentions.
+    
+    Args:
+        soup: BeautifulSoup parsed HTML
+        
+    Returns:
+        List of candidate terms found via DOM traversal
+    """
+    metasploit_strings = soup.find_all(
+        string=re.compile(r"metasploit", re.I)
+    )
+    
+    for string_node in metasploit_strings:
+        parent = string_node.parent
+        if not parent:
+            continue
+        
+        # Check parent element text
+        try:
+            inner_text = parent.get_text(" ", strip=True)
+            msf_index = inner_text.lower().find("metasploit")
+            if msf_index != -1:
+                text_window = inner_text[
+                    msf_index : msf_index + SEARCH_WINDOW_SIZE
+                ]
+                match = re.search(r"\(\s*([^)]+?)\s*\)", text_window)
+                if match:
+                    value = match.group(1).strip()
+                    if _is_valid_candidate(value):
+                        return [_clean_token(value)]
+        except Exception:
+            pass
+        
+        # Check next siblings
+        try:
+            for sibling in parent.next_siblings:
+                sibling_text = ""
+                if hasattr(sibling, "get_text"):
+                    sibling_text = sibling.get_text(" ", strip=True)
+                else:
+                    sibling_text = str(sibling).strip()
+                
+                match = re.search(r"\(\s*([^)]+?)\s*\)", sibling_text)
+                if match:
+                    value = match.group(1).strip()
+                    if _is_valid_candidate(value):
+                        return [_clean_token(value)]
+        except Exception:
+            pass
+        
+        # Check parent's parent if needed
+        if not parent.parent:
+            continue
+            
+        try:
+            grandparent_text = parent.parent.get_text(" ", strip=True)
+            terms = _extract_from_text_patterns(grandparent_text)
+            if terms:
+                return terms
+        except Exception:
+            pass
+    
+    return []
+
+
+def _extract_from_text_patterns(text: str, soup: Any = None) -> list[str]:
+    """
+    Extract Metasploit terms using regex patterns on text.
+    
+    Args:
+        text: Text to search
+        soup: Optional BeautifulSoup object for enhanced extraction
+        
+    Returns:
+        List of candidate terms found via pattern matching
+    """
+    # If soup provided, try DOM-aware extraction first
+    if soup is not None:
+        for string_node in soup.find_all(string=re.compile(r"metasploit", re.I)):
+            parent = string_node.parent
+            if not parent:
+                continue
+            
+            # Check parent element text
+            try:
+                inner_text = parent.get_text(" ", strip=True)
+                msf_index = inner_text.lower().find("metasploit")
+                if msf_index != -1:
+                    text_window = inner_text[
+                        msf_index : msf_index + SEARCH_WINDOW_SIZE
+                    ]
+                    match = re.search(r"\(\s*([^)]+?)\s*\)", text_window)
+                    if match:
+                        value = match.group(1).strip()
+                        if _is_valid_candidate(value):
+                            return [_clean_token(value)]
+            except Exception:
+                pass
+            
+            # Check next siblings
+            try:
+                for sibling in parent.next_siblings:
+                    sibling_text = ""
+                    if hasattr(sibling, "get_text"):
+                        sibling_text = sibling.get_text(" ", strip=True)
+                    else:
+                        sibling_text = str(sibling).strip()
+                    
+                    match = re.search(r"\(\s*([^)]+?)\s*\)", sibling_text)
+                    if match:
+                        value = match.group(1).strip()
+                        if _is_valid_candidate(value):
+                            return [_clean_token(value)]
+            except Exception:
+                pass
+    
+    # Try direct Metasploit pattern match
+    match = MSF_PATTERN.search(text)
+    if match:
+        value = match.group(1).strip()
+        if _is_valid_candidate(value):
+            return [_clean_token(value)]
+    
+    # Look for first parenthesis after "metasploit"
+    msf_index = text.lower().find("metasploit")
+    if msf_index != -1:
+        text_window = text[msf_index : msf_index + SEARCH_WINDOW_SIZE]
+        match = re.search(r"\(\s*([^)]+?)\s*\)", text_window)
+        if match:
+            value = match.group(1).strip()
+            if _is_valid_candidate(value):
+                return [_clean_token(value)]
+    
+    return []
+
+
+def _extract_from_parentheses(text: str) -> list[str]:
+    """
+    Extract all parenthesized tokens as fallback candidates.
+    
+    This matches the original's legacy fallback behavior, including
+    special preference for terms containing 'metasploit' or starting
+    with uppercase.
+    
+    Args:
+        text: Text to search
+        
+    Returns:
+        List of candidate terms from parentheses
+    """
+    candidates = []
+    
+    for match in PARENTHESIS_PATTERN.finditer(text):
+        inner = match.group(1).strip()
+        # Original checked for: len > 3, contains letter, 
+        # and (contains 'metasploit' OR starts with uppercase)
+        if (
+            len(inner) > 3
+            and re.search(r"[A-Za-z]", inner)
+            and not inner.lower().startswith("http")
+        ):
+            # Prefer terms that contain "metasploit" or start uppercase
+            if "metasploit" in inner.lower() or inner[0].isupper():
+                candidates.append(inner)
+    
+    # Deduplicate while preserving order
+    seen = set()
+    deduplicated = []
+    for token in candidates:
+        if token not in seen:
+            deduplicated.append(token)
+            seen.add(token)
+    
+    # Clean all tokens
     cleaned = []
-    for t in terms:
-        tt = re.sub(r"\s+", " ", t).strip()
-        tt = tt.strip(" \n\t\"'.,:;")
-        if len(tt) > 2 and tt.lower() != "metasploit":
-            cleaned.append(tt)
+    for token in deduplicated:
+        cleaned_token = _clean_token(token)
+        if _is_valid_candidate(cleaned_token):
+            cleaned.append(cleaned_token)
+    
     return cleaned
 
-def _build_one_liners(term: str) -> List[str]:
+
+def _extract_from_structured_data(html: str) -> list[str]:
+    """
+    Extract Metasploit module name from structured page data (Next.js).
+    
+    Args:
+        html: Raw HTML content
+        
+    Returns:
+        List containing module name if found, empty list otherwise
+    """
+    # Look for __NEXT_DATA__ script tag
+    script_match = re.search(
+        r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+        html,
+        flags=re.S,
+    )
+    
+    if not script_match:
+        return []
+    
+    try:
+        data = json.loads(script_match.group(1))
+        plugin = data.get("props", {}).get("pageProps", {}).get("plugin")
+        
+        if not plugin or not isinstance(plugin, dict):
+            return []
+        
+        # Try explicit metasploit_name field
+        msf_name = plugin.get("metasploit_name")
+        if msf_name and isinstance(msf_name, str) and msf_name.strip():
+            return [msf_name.strip()]
+        
+        # Try attributes list
+        attributes = plugin.get("attributes", [])
+        if isinstance(attributes, list):
+            for attr in attributes:
+                try:
+                    attr_name = attr.get("attribute_name", "").lower()
+                    if attr_name == "metasploit_name":
+                        value = attr.get("attribute_value")
+                        if (
+                            value
+                            and isinstance(value, str)
+                            and value.strip()
+                        ):
+                            return [value.strip()]
+                except Exception:
+                    continue
+    except json.JSONDecodeError:
+        pass
+    except Exception:
+        pass
+    
+    return []
+
+
+def _find_search_terms_from_html(html: str) -> list[str]:
+    """
+    Extract Metasploit module search terms from HTML.
+    
+    Tries multiple extraction strategies in order of preference:
+    1. Structured data (Next.js __NEXT_DATA__)
+    2. 'Exploitable with' header section
+    3. DOM traversal around 'Metasploit' mentions
+    4. Text pattern matching
+    5. Parenthesized token extraction
+    
+    Args:
+        html: Raw HTML content
+        
+    Returns:
+        List of candidate search terms
+    """
+    # Strategy 1: Structured data
+    terms = _extract_from_structured_data(html)
+    if terms:
+        return terms
+    
+    if not METASPLOIT_DEPS_AVAILABLE:
+        return []
+    
+    soup = BeautifulSoup(html, "html.parser")
+    
+    # Strategy 2: Exploitable with header
+    terms = _extract_from_exploitable_header(soup)
+    if terms:
+        return terms
+    
+    # Strategy 3: DOM traversal
+    terms = _extract_from_dom_traversal(soup)
+    if terms:
+        return terms
+    
+    # Strategy 4: Text patterns on full page text
+    all_text = soup.get_text(" ", strip=True)
+    terms = _extract_from_text_patterns(all_text)
+    if terms:
+        return terms
+    
+    # Strategy 5: Parentheses fallback
+    return _extract_from_parentheses(all_text)
+
+
+def _build_msfconsole_commands(term: str) -> list[str]:
+    """
+    Build msfconsole one-liner commands for a search term.
+    
+    Args:
+        term: Metasploit module search term
+        
+    Returns:
+        List of msfconsole command strings
+    """
+    # Use appropriate quoting based on term content
     if "'" in term:
-        cmd = f'msfconsole -q -x "search {term}; exit"'
+        cmd1 = f'msfconsole -q -x "search {term}; exit"'
         cmd2 = f'msfconsole -q -x "search type:exploit {term}; exit"'
     else:
-        cmd = f"msfconsole -q -x 'search {term}; exit'"
+        cmd1 = f"msfconsole -q -x 'search {term}; exit'"
         cmd2 = f"msfconsole -q -x 'search type:exploit {term}; exit'"
-    return [cmd, cmd2]
+    
+    return [cmd1, cmd2]
+
 
 def show_msf_available(plugin_url: str) -> None:
-    """Non-blocking informational notice shown after Plugin Details when file ends with '-MSF.txt'."""
+    """
+    Display notice that Metasploit module is available.
+    
+    Non-blocking informational message shown when file ends with '-MSF.txt'.
+    
+    Args:
+        plugin_url: URL of the plugin page (not used but kept for API
+            compatibility)
+    """
     header("Metasploit module available!")
-    info("Select \"metasploit\" in the tool menu to search for available modules.\n")
+    info(
+        'Select "metasploit" in the tool menu to search for '
+        "available modules.\n"
+    )
+
 
 def interactive_msf_search(plugin_url: str) -> None:
-    """Fetch plugin page, extract candidate terms, display one-liners, offer copy-to-clipboard."""
-    # copy_to_clipboard is defined in this module; import local symbol if needed
+    """
+    Interactive Metasploit module search workflow.
+    
+    Fetches plugin page, extracts candidate search terms, displays
+    suggested msfconsole commands, and offers clipboard copy.
+    
+    Args:
+        plugin_url: URL of the plugin page to search
+    """
     header("Metasploit module search")
-    if not requests or not BeautifulSoup:
-        warn("Required libraries (requests, beautifulsoup4) are not installed; cannot perform MSF search.")
+    
+    if not METASPLOIT_DEPS_AVAILABLE:
+        warn(
+            "Required libraries (requests, beautifulsoup4) are not "
+            "installed; cannot perform MSF search."
+        )
         return
-    # show a spinner/short progress bar while fetching the plugin page
+    
+    # Fetch plugin page with progress indicator
     try:
         with Progress(
             SpinnerColumn(),
@@ -394,52 +861,54 @@ def interactive_msf_search(plugin_url: str) -> None:
             transient=True,
         ) as progress:
             task = progress.add_task("Fetching plugin page...", start=False)
-            # start the task so spinner appears; total is not used (indeterminate)
             progress.start_task(task)
             html = _fetch_html(plugin_url)
     except Exception as exc:
         warn(f"Failed to fetch plugin page: {exc}")
         return
-
+    
+    # Extract search terms
     terms = _find_search_terms_from_html(html)
     if not terms:
         warn("No candidate Metasploit search terms found on the page.")
         return
-
+    
+    # Display found terms
     info("Found candidate search term(s):")
-    for i, t in enumerate(terms, 1):
-        info(f" {i}. {t}")
-
+    for index, term in enumerate(terms, 1):
+        info(f" {index}. {term}")
+    
+    # Build and display one-liners
     info("\nSuggested msfconsole one-liner(s):")
     one_liners = []
-    for t in terms:
-        one_liners.extend(_build_one_liners(t))
-
-    for i, cmd in enumerate(one_liners, 1):
-        info(f" {i}. {fmt_action(cmd)}")
-
-    # Offer to copy one to clipboard
+    for term in terms:
+        one_liners.extend(_build_msfconsole_commands(term))
+    
+    for index, cmd in enumerate(one_liners, 1):
+        info(f" {index}. {fmt_action(cmd)}")
+    
+    # Offer clipboard copy
     try:
-        from rich.prompt import Prompt
-        ans = Prompt.ask("Copy which one-liner to clipboard? (number or [N]one)", default="N")
-        if ans and ans.strip().lower() != "n":
+        answer = Prompt.ask(
+            "Copy which one-liner to clipboard? (number or [N]one)",
+            default="N",
+        )
+        
+        if answer and answer.strip().lower() != "n":
             try:
-                n = int(ans.strip())
-                if 1 <= n <= len(one_liners):
-                    try:
-                        copy_to_clipboard(one_liners[n - 1])
-                    except Exception:
-                        try:
-                            from .tools import copy_to_clipboard as _copy
-                            _copy(one_liners[n - 1])
-                        except Exception:
-                            pass
-                    ok("Copied to clipboard.")
-            except Exception:
+                selection = int(answer.strip())
+                if 1 <= selection <= len(one_liners):
+                    success, message = copy_to_clipboard(
+                        one_liners[selection - 1]
+                    )
+                    if success:
+                        ok("Copied to clipboard.")
+                    else:
+                        warn(f"Failed to copy: {message}")
+                else:
+                    warn("Invalid selection. No copy performed.")
+            except ValueError:
                 warn("Invalid selection. No copy performed.")
     except Exception:
+        # Gracefully handle any prompt errors
         pass
-
-# ----------------------------------------------------------------------
-# End of MSF helpers
-# ----------------------------------------------------------------------
