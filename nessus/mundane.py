@@ -256,6 +256,68 @@ def _color_unreviewed(count: int) -> str:
     return f"{C.RED}{count}{C.RESET}"
 
 
+def parse_severity_selection(
+    selection: str, max_index: int
+) -> Optional[List[int]]:
+    """
+    Parse user selection into list of severity indices.
+    
+    Supports:
+        - Single number: "1" -> [1]
+        - Range: "1-3" -> [1, 2, 3]
+        - Comma-separated: "1,3,5" -> [1, 3, 5]
+        - Mixed: "1-3,5,7-9" -> [1, 2, 3, 5, 7, 8, 9]
+    
+    Args:
+        selection: User input string
+        max_index: Maximum valid index (inclusive)
+    
+    Returns:
+        List of valid 1-based indices, or None if invalid
+    """
+    indices = set()
+    
+    # Split by comma first
+    parts = [p.strip() for p in selection.split(",")]
+    
+    for part in parts:
+        if not part:
+            continue
+            
+        # Check if it's a range
+        if "-" in part:
+            range_parts = part.split("-", 1)
+            if len(range_parts) != 2:
+                return None
+                
+            start_str, end_str = range_parts
+            if not start_str.isdigit() or not end_str.isdigit():
+                return None
+                
+            start = int(start_str)
+            end = int(end_str)
+            
+            if start < 1 or end > max_index or start > end:
+                return None
+                
+            indices.update(range(start, end + 1))
+        else:
+            # Single number
+            if not part.isdigit():
+                return None
+                
+            num = int(part)
+            if num < 1 or num > max_index:
+                return None
+                
+            indices.add(num)
+    
+    if not indices:
+        return None
+        
+    return sorted(list(indices))
+
+
 def choose_from_list(
     items: List[Any],
     title: str,
@@ -1666,14 +1728,69 @@ def main(args: types.SimpleNamespace) -> None:
                 break
 
             options_count = len(severities) + (1 if has_msf else 0)
-            if not ans.isdigit() or not (1 <= int(ans) <= options_count):
-                warn("Invalid choice.")
+            
+            # Parse selection (supports ranges and comma-separated)
+            selected_indices = parse_severity_selection(ans, options_count)
+            
+            if selected_indices is None:
+                warn("Invalid choice. Use single numbers, ranges (1-3), or comma-separated (1,3,5).")
                 continue
 
-            choice_idx = int(ans)
+            # Check if MSF is included in selection
+            msf_in_selection = has_msf and options_count in selected_indices
+            
+            # Filter out MSF from severity indices
+            severity_indices = [idx for idx in selected_indices if idx <= len(severities)]
+            
+            # === Multiple severities selected (or mix of severities + MSF) ===
+            if len(severity_indices) > 1 or (len(severity_indices) >= 1 and msf_in_selection):
+                selected_sev_dirs = [severities[idx - 1] for idx in severity_indices]
+                
+                # Build combined label
+                sev_labels = [pretty_severity_label(sev.name) for sev in selected_sev_dirs]
+                if msf_in_selection:
+                    sev_labels.append("Metasploit Module")
+                
+                combined_label = " + ".join(sev_labels)
+                
+                def multi_files_getter() -> List[Tuple[Path, Path]]:
+                    """Get files from multiple selected severity directories."""
+                    multi_files = []
+                    
+                    # Add files from selected severity directories
+                    for sev_dir in selected_sev_dirs:
+                        for file in list_files(sev_dir):
+                            if file.suffix.lower() == ".txt":
+                                multi_files.append((file, sev_dir))
+                    
+                    # Add MSF files if selected
+                    if msf_in_selection:
+                        for severity_dir in severities:
+                            for file in list_files(severity_dir):
+                                if (
+                                    file.suffix.lower() == ".txt"
+                                    and file.name.endswith("-MSF.txt")
+                                ):
+                                    multi_files.append((file, severity_dir))
+                    
+                    return multi_files
 
-            # === Normal severity selected ===
-            if choice_idx <= len(severities):
+                browse_file_list(
+                    scan_dir,
+                    selected_sev_dirs[0] if selected_sev_dirs else severities[0],  # Placeholder
+                    multi_files_getter,
+                    combined_label,
+                    args,
+                    use_sudo,
+                    skipped_total,
+                    reviewed_total,
+                    completed_total,
+                    is_msf_mode=True,  # Show severity labels for each file
+                )
+                
+            # === Single severity selected (normal or MSF only) ===
+            elif len(severity_indices) == 1:
+                choice_idx = severity_indices[0]
                 sev_dir = severities[choice_idx - 1]
 
                 def files_getter() -> List[Tuple[Path, Path]]:
@@ -1697,10 +1814,9 @@ def main(args: types.SimpleNamespace) -> None:
                     completed_total,
                     is_msf_mode=False,
                 )
-
-            # === Metasploit Module (virtual) ===
-            else:
-
+                
+            # === Metasploit Module only ===
+            elif msf_in_selection:
                 def msf_files_getter() -> List[Tuple[Path, Path]]:
                     """Get MSF files from all severity directories."""
                     msf_files = []
