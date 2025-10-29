@@ -11,11 +11,12 @@ A modernized **TUI helper** to review Nessus plugin host files quickly and kick 
   ```bash
   pip install -r requirements.txt
   ```
-  Uses: `rich`, `typer`, `pyperclip`, `colorama`, `loguru`
+  Uses: `rich`, `typer`, `pyperclip`, `colorama`, `loguru`, `requests`, `beautifulsoup4`
 - Optional external tools (only when you run them):
   - `git` – used by the wizard to clone **NessusPluginHosts**
   - `nmap`
   - `nxc` / `netexec`
+  - `msfconsole` – for Metasploit module searches
 - Linux recommended. For clipboard copy you may need `xclip`, `xsel`, or `wl-copy`.
 
 ---
@@ -78,6 +79,11 @@ python mundane.py review --export-root ./nessus_plugin_hosts
 - **Paged views** with `[N]ext`, `[P]rev`, `[B]ack` navigation.
 - **Grouped view** (`host:port,port`) or raw file view.
 - **Clipboard copy** for any file or command.
+- **CVE extraction** - View CVE identifiers for any plugin from Tenable plugin pages.
+- **Metasploit module search** - Search for relevant Metasploit modules by CVE or description:
+  - Automatically extracts CVEs and exploit descriptions from plugin pages
+  - Generates `msfconsole` search commands for both CVEs and descriptions
+  - Execute searches directly from the tool with confirmation prompts
 - **Run tools** against hosts:
   - `nmap` (profiles and UDP handling supported)
   - `netexec` / `nxc`
@@ -87,7 +93,7 @@ python mundane.py review --export-root ./nessus_plugin_hosts
 - **Bulk mark** reviewed files as `REVIEW_COMPLETE-...`.
 - **Scan overview** summaries (totals, top ports, identical groups).
 - **Progress indicators** for cloning, parsing, exporting, or running tools.
-- **Registry-driven tool system** (nmap/netexec today; others can be added later).
+- **Registry-driven tool system** (nmap/netexec/metasploit today; others can be added later).
 
 ---
 

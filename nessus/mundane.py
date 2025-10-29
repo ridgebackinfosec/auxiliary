@@ -576,23 +576,50 @@ def _hosts_only_paged_text(path: Path) -> str:
 # === File viewing workflow ===
 
 
-def handle_file_view(chosen: Path) -> None:
+def handle_file_view(chosen: Path, plugin_url: Optional[str] = None) -> None:
     """
-    Interactive file viewing menu (raw/grouped/hosts-only/copy).
+    Interactive file viewing menu (raw/grouped/hosts-only/copy/CVE info).
 
     Args:
         chosen: Plugin file to view
+        plugin_url: Optional Tenable plugin URL for CVE extraction
     """
-    # Step 1: Ask if user wants to view or copy
+    # Step 1: Ask if user wants to view, copy, or see CVE info
     try:
         action_choice = input(
-            "\n[V] View file / [C] Copy to clipboard / [Enter] Skip: "
+            "\n[V] View file / [E] CVE info / [C] Copy to clipboard / [Enter] Skip: "
         ).strip().lower()
     except KeyboardInterrupt:
         # User cancelled - just return to continue file processing
         return
 
     if action_choice in ("", "n", "none", "skip"):
+        return
+
+    # Handle CVE info option
+    if action_choice in ("e", "cve"):
+        if not plugin_url:
+            warn("No plugin URL available for CVE extraction.")
+            return
+
+        from mundane_pkg.tools import _fetch_html, _extract_cves_from_html
+
+        # Fetch and extract CVEs
+        try:
+            header("CVE Information")
+            info("Fetching plugin page...")
+            html = _fetch_html(plugin_url)
+            cves = _extract_cves_from_html(html)
+
+            if cves:
+                info(f"Found {len(cves)} CVE(s):")
+                for cve in cves:
+                    info(f"  • {cve}")
+            else:
+                warn("No CVEs found on plugin page.")
+        except Exception as exc:
+            warn(f"Failed to fetch CVE information: {exc}")
+
         return
 
     # Step 2: Ask for format (applies to both view and copy)
@@ -1044,7 +1071,7 @@ def process_single_file(
         info(f"Ports detected: {ports_str}")
 
     # View file
-    handle_file_view(chosen)
+    handle_file_view(chosen, plugin_url=plugin_url)
 
     completion_decided = False
 

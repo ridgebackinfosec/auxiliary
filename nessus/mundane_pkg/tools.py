@@ -448,24 +448,74 @@ def copy_to_clipboard(text: str) -> tuple[bool, str]:
 def _fetch_html(url: str, timeout: int = HTTP_TIMEOUT) -> str:
     """
     Fetch HTML content from a URL.
-    
+
     Args:
         url: URL to fetch
         timeout: Request timeout in seconds
-        
+
     Returns:
         HTML content as string
-        
+
     Raises:
         RuntimeError: If requests library is not available
         requests.HTTPError: If HTTP request fails
     """
     if not METASPLOIT_DEPS_AVAILABLE:
         raise RuntimeError("requests library is not available")
-    
+
     response = requests.get(url, headers=HTTP_HEADERS, timeout=timeout)
     response.raise_for_status()
     return response.text
+
+
+def _extract_cves_from_html(html: str) -> list[str]:
+    """
+    Extract CVE identifiers from plugin page HTML.
+
+    Searches the "Reference Information" section for CVE identifiers
+    and returns a deduplicated, sorted list.
+
+    Args:
+        html: Raw HTML content from plugin page
+
+    Returns:
+        Sorted list of unique CVE identifiers (e.g., ["CVE-2019-1003000", ...])
+    """
+    if not METASPLOIT_DEPS_AVAILABLE:
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    cves = set()
+
+    # Pattern to match CVE identifiers: CVE-YYYY-NNNNN (or more digits)
+    cve_pattern = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
+
+    # Find "Reference Information" section
+    # Look for headers containing "reference" and "information"
+    ref_headers = soup.find_all(
+        lambda tag: tag.name in ("h1", "h2", "h3", "h4", "h5", "h6")
+        and "reference" in tag.get_text().lower()
+        and "information" in tag.get_text().lower()
+    )
+
+    if ref_headers:
+        # Extract CVEs from the section following the header
+        for header in ref_headers:
+            # Get next siblings until next header or end
+            for sibling in header.find_next_siblings():
+                if sibling.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+                    break
+                text = sibling.get_text()
+                cves.update(cve_pattern.findall(text))
+
+    # Fallback: search entire page if section not found
+    if not cves:
+        all_text = soup.get_text()
+        cves.update(cve_pattern.findall(all_text))
+
+    # Normalize to uppercase and sort
+    normalized = sorted({cve.upper() for cve in cves})
+    return normalized
 
 
 def _clean_token(token: str) -> str:
@@ -786,51 +836,59 @@ def _extract_from_structured_data(html: str) -> list[str]:
     return []
 
 
-def _find_search_terms_from_html(html: str) -> list[str]:
+def _find_search_terms_from_html(html: str) -> dict[str, list[str]]:
     """
-    Extract Metasploit module search terms from HTML.
-    
+    Extract Metasploit module search terms and CVEs from HTML.
+
     Tries multiple extraction strategies in order of preference:
     1. Structured data (Next.js __NEXT_DATA__)
     2. 'Exploitable with' header section
     3. DOM traversal around 'Metasploit' mentions
     4. Text pattern matching
     5. Parenthesized token extraction
-    
+
+    Also extracts CVE identifiers from the page.
+
     Args:
         html: Raw HTML content
-        
+
     Returns:
-        List of candidate search terms
+        Dictionary with keys:
+        - "metasploit_terms": List of Metasploit module candidate search terms
+        - "cves": List of CVE identifiers found on the page
     """
+    # Extract CVEs first (always attempt)
+    cves = _extract_cves_from_html(html)
+
     # Strategy 1: Structured data
     terms = _extract_from_structured_data(html)
     if terms:
-        return terms
-    
+        return {"metasploit_terms": terms, "cves": cves}
+
     if not METASPLOIT_DEPS_AVAILABLE:
-        return []
-    
+        return {"metasploit_terms": [], "cves": cves}
+
     soup = BeautifulSoup(html, "html.parser")
-    
+
     # Strategy 2: Exploitable with header
     terms = _extract_from_exploitable_header(soup)
     if terms:
-        return terms
-    
+        return {"metasploit_terms": terms, "cves": cves}
+
     # Strategy 3: DOM traversal
     terms = _extract_from_dom_traversal(soup)
     if terms:
-        return terms
-    
+        return {"metasploit_terms": terms, "cves": cves}
+
     # Strategy 4: Text patterns on full page text
     all_text = soup.get_text(" ", strip=True)
     terms = _extract_from_text_patterns(all_text)
     if terms:
-        return terms
-    
+        return {"metasploit_terms": terms, "cves": cves}
+
     # Strategy 5: Parentheses fallback
-    return _extract_from_parentheses(all_text)
+    terms = _extract_from_parentheses(all_text)
+    return {"metasploit_terms": terms, "cves": cves}
 
 
 def _build_msfconsole_commands(term: str) -> list[str]:
@@ -857,9 +915,9 @@ def _build_msfconsole_commands(term: str) -> list[str]:
 def show_msf_available(plugin_url: str) -> None:
     """
     Display notice that Metasploit module is available.
-    
+
     Non-blocking informational message shown when file ends with '-MSF.txt'.
-    
+
     Args:
         plugin_url: URL of the plugin page (not used but kept for API
             compatibility)
@@ -871,25 +929,75 @@ def show_msf_available(plugin_url: str) -> None:
     )
 
 
+def _execute_msfconsole_command(cmd: str) -> None:
+    """
+    Execute a msfconsole command with user confirmation.
+
+    Displays the command, asks for confirmation, then executes it
+    via subprocess with real-time output streaming.
+
+    Args:
+        cmd: The msfconsole command string to execute
+    """
+    # Display command to be executed
+    info(f"\nCommand to execute:\n  {fmt_action(cmd)}\n")
+
+    # Ask for confirmation
+    try:
+        confirm = input("Execute this command? [y/N]: ").strip().lower()
+    except KeyboardInterrupt:
+        info("\nExecution cancelled.")
+        return
+
+    if confirm not in ("y", "yes"):
+        info("Execution skipped.")
+        return
+
+    # Execute command
+    info("Executing...\n")
+    try:
+        # Use shell=True to handle the complex command string
+        # This is safe since cmd is constructed internally, not from user input
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            warn(f"\nCommand exited with code {result.returncode}")
+        else:
+            ok("\nCommand completed successfully.")
+
+    except FileNotFoundError:
+        warn(
+            "msfconsole not found. Ensure Metasploit Framework is installed "
+            "and in your PATH."
+        )
+    except Exception as exc:
+        warn(f"Error executing command: {exc}")
+
+
 def interactive_msf_search(plugin_url: str) -> None:
     """
     Interactive Metasploit module search workflow.
-    
-    Fetches plugin page, extracts candidate search terms, displays
-    suggested msfconsole commands, and offers clipboard copy.
-    
+
+    Fetches plugin page, extracts CVEs and Metasploit candidate terms,
+    displays suggested msfconsole commands, and offers command execution.
+
     Args:
         plugin_url: URL of the plugin page to search
     """
     header("Metasploit module search")
-    
+
     if not METASPLOIT_DEPS_AVAILABLE:
         warn(
             "Required libraries (requests, beautifulsoup4) are not installed.\n"
             "Install with: pip install requests beautifulsoup4"
         )
         return
-    
+
     # Fetch plugin page with progress indicator
     try:
         with Progress(
@@ -904,49 +1012,66 @@ def interactive_msf_search(plugin_url: str) -> None:
     except Exception as exc:
         warn(f"Failed to fetch plugin page: {exc}")
         return
-    
-    # Extract search terms
-    terms = _find_search_terms_from_html(html)
-    if not terms:
-        warn("No candidate Metasploit search terms found on the page.")
+
+    # Extract search terms and CVEs
+    extracted = _find_search_terms_from_html(html)
+    metasploit_terms = extracted.get("metasploit_terms", [])
+    cves = extracted.get("cves", [])
+
+    if not metasploit_terms and not cves:
+        warn("No candidate search terms or CVEs found on the page.")
         return
-    
-    # Display found terms
-    info("Found candidate search term(s):")
-    for index, term in enumerate(terms, 1):
-        info(f" {index}. {term}")
-    
+
+    # Display found candidates
+    if cves:
+        info("Found CVE(s):")
+        for cve in cves:
+            info(f"  • {cve}")
+
+    if metasploit_terms:
+        info("\nFound Metasploit search term(s):")
+        for index, term in enumerate(metasploit_terms, 1):
+            info(f"  {index}. {term}")
+
     # Build and display one-liners
     info("\nSuggested msfconsole one-liner(s):")
     one_liners = []
-    for term in terms:
+
+    # Add CVE-based commands
+    for cve in cves:
+        one_liners.extend(_build_msfconsole_commands(cve))
+
+    # Add Metasploit term-based commands
+    for term in metasploit_terms:
         one_liners.extend(_build_msfconsole_commands(term))
-    
+
     for index, cmd in enumerate(one_liners, 1):
-        info(f" {index}. {fmt_action(cmd)}")
-    
-    # Offer clipboard copy
+        # Label commands by type
+        if index <= len(cves) * 2:
+            label = "[CVE-based]"
+        else:
+            label = "[Description-based]"
+        info(f" {index}. {label} {fmt_action(cmd)}")
+
+    # Offer command execution
     try:
         answer = Prompt.ask(
-            "Copy which one-liner to clipboard? (number or [n] None)",
+            "Run which one-liner? (number or [n] None)",
             default="n",
         )
-        
+
         if answer and answer.strip().lower() != "n":
             try:
                 selection = int(answer.strip())
                 if 1 <= selection <= len(one_liners):
-                    success, message = copy_to_clipboard(
-                        one_liners[selection - 1]
-                    )
-                    if success:
-                        ok("Copied to clipboard.")
-                    else:
-                        warn(f"Failed to copy: {message}")
+                    selected_cmd = one_liners[selection - 1]
+                    _execute_msfconsole_command(selected_cmd)
                 else:
-                    warn("Invalid selection. No copy performed.")
+                    warn("Invalid selection. No execution performed.")
             except ValueError:
-                warn("Invalid selection. No copy performed.")
+                warn("Invalid selection. No execution performed.")
+    except KeyboardInterrupt:
+        info("\nExecution cancelled.")
     except Exception:
         # Gracefully handle any prompt errors
         pass
