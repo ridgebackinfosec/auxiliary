@@ -195,17 +195,21 @@ def choose_tool() -> Optional[str]:
     print("[3] metasploit — search for modules")
     print("[4] Custom command (advanced)")
     print(fmt_action("[B] Back"))
-    
+    print("(Press Enter for 'nmap')")
+
     while True:
         try:
             answer = input("Choose: ").strip().lower()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning to file menu.")
             return None
-        
-        if answer in ("b", "back", ""):
-            return None if answer else "nmap"
-        
+
+        if answer == "":
+            return "nmap"
+
+        if answer in ("b", "back"):
+            return None
+
         if answer.isdigit():
             choice_index = int(answer)
             tool_mapping = {
@@ -216,7 +220,7 @@ def choose_tool() -> Optional[str]:
             }
             if choice_index in tool_mapping:
                 return tool_mapping[choice_index]
-        
+
         warn("Invalid choice.")
 
 
@@ -322,25 +326,25 @@ def command_review_menu(cmd_list_or_str: list[str] | str) -> str:
     print()
     print(fmt_action("[1] Run now"))
     print(fmt_action("[2] Copy command to clipboard (don't run)"))
-    print(fmt_action("[3] Cancel"))
-    
+    print(fmt_action("[B] Back"))
+
     while True:
         try:
             choice = input("Choose: ").strip()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning to file menu.")
             return "cancel"
-        
+
         if choice in ("1", "r", "run"):
             return "run"
-        
+
         if choice in ("2", "c", "copy"):
             return "copy"
-        
-        if choice in ("3", "x", "cancel"):
+
+        if choice in ("b", "back"):
             return "cancel"
-        
-        warn("Enter 1, 2, or 3.")
+
+        warn("Enter 1, 2, or [B]ack.")
 
 
 # ========== Clipboard Operations ==========
@@ -890,8 +894,8 @@ def interactive_msf_search(plugin_url: str) -> None:
     # Offer clipboard copy
     try:
         answer = Prompt.ask(
-            "Copy which one-liner to clipboard? (number or [N]one)",
-            default="N",
+            "Copy which one-liner to clipboard? (number or [n] None)",
+            default="n",
         )
         
         if answer and answer.strip().lower() != "n":

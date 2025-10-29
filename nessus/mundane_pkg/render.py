@@ -555,7 +555,7 @@ def severity_style(label: str) -> str:
     if "high" in normalized_label:
         return "yellow"
     if "medium" in normalized_label:
-        return "magenta"
+        return "blue"
     if "low" in normalized_label:
         return "green"
     if "info" in normalized_label:
