@@ -79,11 +79,15 @@ python mundane.py review --export-root ./nessus_plugin_hosts
 - **Paged views** with `[N]ext`, `[P]rev`, `[B]ack` navigation.
 - **Grouped view** (`host:port,port`) or raw file view.
 - **Clipboard copy** for any file or command.
-- **CVE extraction** - View CVE identifiers for any plugin from Tenable plugin pages.
+- **CVE extraction** - View CVE identifiers for plugins:
+  - Individual file view: Press `[E]` to fetch CVEs for the current plugin
+  - Bulk extraction: Press `[E]` in file list to extract CVEs for all filtered files
+  - Choose between separated-by-file or combined list display
 - **Metasploit module search** - Search for relevant Metasploit modules by CVE or description:
   - Automatically extracts CVEs and exploit descriptions from plugin pages
   - Generates `msfconsole` search commands for both CVEs and descriptions
-  - Execute searches directly from the tool with confirmation prompts
+  - Execute searches directly with progress spinner and confirmation prompts
+  - Return to command list after execution to run multiple searches
 - **Run tools** against hosts:
   - `nmap` (profiles and UDP handling supported)
   - `netexec` / `nxc`
