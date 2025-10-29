@@ -316,6 +316,7 @@ def render_actions_footer(
             key_text("R", "Reviewed files"),
             key_text("H", "Compare"),
             key_text("I", "Superset analysis"),
+            key_text("E", f"CVEs for all filtered ({candidates_count})"),
             key_text(
                 "M",
                 f"Mark ALL filtered as REVIEW_COMPLETE ({candidates_count})",
@@ -386,6 +387,7 @@ def show_actions_help(
         Text("Analysis", style="bold"),
         key_text("H", "Compare - Find files with identical host:port combinations"),
         key_text("I", "Inclusion - Find files where one is a subset of another"),
+        key_text("E", f"CVEs for all filtered files ({candidates_count})"),
     )
     if group_applied:
         table.add_row(

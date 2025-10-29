@@ -235,6 +235,68 @@ def _plugin_details_line(path: Path) -> Optional[str]:
     return None
 
 
+def bulk_extract_cves_for_files(files: List[Path]) -> None:
+    """
+    Extract and display CVEs for multiple plugin files.
+
+    Fetches Tenable plugin pages for each file, extracts CVEs,
+    and displays a consolidated list organized by plugin.
+
+    Args:
+        files: List of plugin file paths to extract CVEs from
+    """
+    from mundane_pkg.tools import _fetch_html, _extract_cves_from_html
+
+    header("CVE Extraction for Filtered Files")
+    info(f"Extracting CVEs from {len(files)} file(s)...\n")
+
+    results = {}  # plugin_name -> list of CVEs
+
+    with Progress(
+        SpinnerColumn(style="cyan"),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=_console_global,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Fetching plugin pages...", total=len(files))
+
+        for file_path in files:
+            plugin_id = _plugin_id_from_filename(file_path)
+            if not plugin_id:
+                progress.advance(task)
+                continue
+
+            plugin_url = f"{PLUGIN_DETAILS_BASE}{plugin_id}"
+
+            try:
+                html = _fetch_html(plugin_url)
+                cves = _extract_cves_from_html(html)
+                if cves:
+                    results[file_path.name] = cves
+            except Exception:
+                # Silently skip failed fetches
+                pass
+
+            progress.advance(task)
+
+    # Display results
+    if results:
+        info(f"\nFound CVEs for {len(results)} plugin(s):\n")
+        for plugin_name, cves in sorted(results.items()):
+            info(f"{plugin_name}:")
+            for cve in cves:
+                info(f"  {cve}")
+            print()  # Blank line between plugins
+    else:
+        warn("No CVEs found for any of the filtered files.")
+
+    try:
+        input("\nPress Enter to continue...")
+    except KeyboardInterrupt:
+        pass
+
+
 def _color_unreviewed(count: int) -> str:
     """
     Colorize unreviewed file count based on severity.
@@ -1313,6 +1375,21 @@ def handle_file_list_actions(
                 page_idx,
             )
         warn("Read-only view; no file selection here.")
+        return None, file_filter, reviewed_filter, group_filter, sort_mode, page_idx
+
+    if ans == "e":
+        if not candidates:
+            warn("No files match the current filter.")
+            return (
+                None,
+                file_filter,
+                reviewed_filter,
+                group_filter,
+                sort_mode,
+                page_idx,
+            )
+
+        bulk_extract_cves_for_files(candidates)
         return None, file_filter, reviewed_filter, group_filter, sort_mode, page_idx
 
     if ans == "m":
