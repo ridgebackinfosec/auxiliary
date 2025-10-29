@@ -185,18 +185,40 @@ def build_netexec_cmd(
 def choose_tool() -> Optional[str]:
     """
     Prompt user to select a security tool.
-    
+
+    This function is now data-driven from the tool registry. Tools are
+    automatically displayed based on their registration in TOOL_REGISTRY.
+
     Returns:
-        Tool name ('nmap', 'netexec', 'metasploit', 'custom') or
+        Tool id ('nmap', 'netexec', 'metasploit', 'custom') or
         None if user cancels
     """
+    from .tool_registry import get_available_tools, get_tool_by_menu_index
+
+    # Get all registered tools sorted by menu_order
+    available_tools = get_available_tools(check_requirements=False)
+
+    if not available_tools:
+        warn("No tools available in registry.")
+        return None
+
+    # Display menu header
     header("Choose a tool")
-    print("[1] nmap")
-    print("[2] netexec — multi-protocol")
-    print("[3] metasploit — search for modules")
-    print("[4] Custom command (advanced)")
+
+    # Display tools dynamically from registry
+    for index, tool in enumerate(available_tools, start=1):
+        # Format: [1] nmap or [2] netexec — multi-protocol
+        if tool.description and tool.description != tool.name:
+            print(f"[{index}] {tool.name} — {tool.description}")
+        else:
+            print(f"[{index}] {tool.name}")
+
     print(fmt_action("[B] Back"))
-    print("(Press Enter for 'nmap')")
+
+    # Default to first tool (nmap by convention)
+    default_tool = available_tools[0] if available_tools else None
+    if default_tool:
+        print(f"(Press Enter for '{default_tool.name}')")
 
     while True:
         try:
@@ -205,22 +227,20 @@ def choose_tool() -> Optional[str]:
             warn("\nInterrupted — returning to file menu.")
             return None
 
-        if answer == "":
-            return "nmap"
+        # Handle default (Enter key)
+        if answer == "" and default_tool:
+            return default_tool.id
 
+        # Handle back/cancel
         if answer in ("b", "back", "q"):
             return None
 
+        # Handle numeric selection
         if answer.isdigit():
             choice_index = int(answer)
-            tool_mapping = {
-                1: "nmap",
-                2: "netexec",
-                3: "metasploit",
-                4: "custom",
-            }
-            if choice_index in tool_mapping:
-                return tool_mapping[choice_index]
+            selected_tool = get_tool_by_menu_index(choice_index, available_only=False)
+            if selected_tool:
+                return selected_tool.id
 
         warn("Invalid choice.")
 

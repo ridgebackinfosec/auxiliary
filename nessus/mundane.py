@@ -868,12 +868,27 @@ def run_tool_workflow(
         if tool_choice is None:
             break
 
+        # Get the selected tool from registry
+        from mundane_pkg.tool_registry import get_tool
+        selected_tool = get_tool(tool_choice)
+
+        if not selected_tool:
+            warn(f"Unknown tool selection: {tool_choice}")
+            continue
+
         _tmp_dir, oabase = build_results_paths(scan_dir, sev_dir, chosen.name)
         results_dir = out_dir_static
         nxc_relay_path = None
 
+        # ====================================================================
+        # Tool Dispatch - Registry-based with backward compatibility
+        # ====================================================================
+        # Call the appropriate workflow builder based on tool id
+        # Each workflow has different parameters, so we handle them separately
+        # ====================================================================
+
         if tool_choice == "nmap":
-            result = _build_nmap_workflow(
+            result = selected_tool.workflow_builder(
                 tcp_ips, udp_ips, ports_str, use_sudo, oabase
             )
             if result is None:
@@ -881,12 +896,13 @@ def run_tool_workflow(
             cmd, display_cmd, artifact_note = result
 
         elif tool_choice == "netexec":
-            result = _build_netexec_workflow(tcp_ips, oabase)
+            result = selected_tool.workflow_builder(tcp_ips, oabase)
             if result is None:
                 continue
             cmd, display_cmd, artifact_note, nxc_relay_path = result
 
         elif tool_choice == "metasploit":
+            # Metasploit has special handling (web search, no command building)
             if plugin_url:
                 from mundane_pkg import tools as _tools
 
@@ -897,7 +913,7 @@ def run_tool_workflow(
             continue
 
         elif tool_choice == "custom":
-            result = _build_custom_workflow(
+            result = selected_tool.workflow_builder(
                 tcp_ips,
                 udp_ips,
                 tcp_sockets,
@@ -911,7 +927,8 @@ def run_tool_workflow(
             cmd, display_cmd, artifact_note = result
 
         else:
-            warn("Unknown tool selection.")
+            # This should never happen if registry is properly configured
+            warn(f"Tool '{tool_choice}' registered but not implemented in dispatch.")
             continue
 
         action = command_review_menu(display_cmd)
