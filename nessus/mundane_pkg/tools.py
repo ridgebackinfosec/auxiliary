@@ -929,16 +929,21 @@ def show_msf_available(plugin_url: str) -> None:
     )
 
 
-def _execute_msfconsole_command(cmd: str) -> None:
+def _execute_msfconsole_command(cmd: str) -> bool:
     """
-    Execute a msfconsole command with user confirmation.
+    Execute a msfconsole command with user confirmation and progress spinner.
 
     Displays the command, asks for confirmation, then executes it
-    via subprocess with real-time output streaming.
+    via run_command_with_progress for consistent UX with other tools.
 
     Args:
         cmd: The msfconsole command string to execute
+
+    Returns:
+        True if command was executed (success or failure), False if skipped/cancelled
     """
+    from .ops import run_command_with_progress
+
     # Display command to be executed
     info(f"\nCommand to execute:\n  {fmt_action(cmd)}\n")
 
@@ -947,36 +952,42 @@ def _execute_msfconsole_command(cmd: str) -> None:
         confirm = input("Execute this command? [y/N]: ").strip().lower()
     except KeyboardInterrupt:
         info("\nExecution cancelled.")
-        return
+        return False
 
     if confirm not in ("y", "yes"):
         info("Execution skipped.")
-        return
+        return False
 
-    # Execute command
-    info("Executing...\n")
+    # Execute command with progress spinner
     try:
-        # Use shell=True to handle the complex command string
-        # This is safe since cmd is constructed internally, not from user input
-        result = subprocess.run(
+        # Determine shell executable
+        shell_exec = shutil.which("bash") or shutil.which("sh")
+        return_code = run_command_with_progress(
             cmd,
             shell=True,
-            text=True,
-            check=False,
+            executable=shell_exec,
         )
+        ok("\nCommand completed successfully.")
+        return True
 
-        if result.returncode != 0:
-            warn(f"\nCommand exited with code {result.returncode}")
-        else:
-            ok("\nCommand completed successfully.")
+    except subprocess.CalledProcessError as e:
+        warn(f"\nCommand exited with code {e.returncode}")
+        return True  # Still executed, just failed
 
     except FileNotFoundError:
         warn(
             "msfconsole not found. Ensure Metasploit Framework is installed "
             "and in your PATH."
         )
+        return False
+
+    except KeyboardInterrupt:
+        warn("\nExecution interrupted.")
+        raise
+
     except Exception as exc:
         warn(f"Error executing command: {exc}")
+        return False
 
 
 def interactive_msf_search(plugin_url: str) -> None:
@@ -1033,8 +1044,7 @@ def interactive_msf_search(plugin_url: str) -> None:
         for index, term in enumerate(metasploit_terms, 1):
             info(f"  {index}. {term}")
 
-    # Build and display one-liners
-    info("\nSuggested msfconsole one-liner(s):")
+    # Build one-liners once
     one_liners = []
 
     # Add CVE-based commands
@@ -1045,33 +1055,47 @@ def interactive_msf_search(plugin_url: str) -> None:
     for term in metasploit_terms:
         one_liners.extend(_build_msfconsole_commands(term))
 
-    for index, cmd in enumerate(one_liners, 1):
-        # Label commands by type
-        if index <= len(cves) * 2:
-            label = "[CVE-based]"
-        else:
-            label = "[Description-based]"
-        info(f" {index}. {label} {fmt_action(cmd)}")
+    # Loop: display commands and offer execution, return to menu after each run
+    while True:
+        # Display one-liners
+        info("\nSuggested msfconsole one-liner(s):")
+        for index, cmd in enumerate(one_liners, 1):
+            # Label commands by type
+            if index <= len(cves) * 2:
+                label = "[CVE-based]"
+            else:
+                label = "[Description-based]"
+            info(f" {index}. {label} {fmt_action(cmd)}")
 
-    # Offer command execution
-    try:
-        answer = Prompt.ask(
-            "Run which one-liner? (number or [n] None)",
-            default="n",
-        )
+        # Offer command execution
+        try:
+            answer = Prompt.ask(
+                "Run which one-liner? (number or [n] None)",
+                default="n",
+            )
 
-        if answer and answer.strip().lower() != "n":
-            try:
-                selection = int(answer.strip())
-                if 1 <= selection <= len(one_liners):
-                    selected_cmd = one_liners[selection - 1]
-                    _execute_msfconsole_command(selected_cmd)
-                else:
-                    warn("Invalid selection. No execution performed.")
-            except ValueError:
-                warn("Invalid selection. No execution performed.")
-    except KeyboardInterrupt:
-        info("\nExecution cancelled.")
-    except Exception:
-        # Gracefully handle any prompt errors
-        pass
+            if answer and answer.strip().lower() != "n":
+                try:
+                    selection = int(answer.strip())
+                    if 1 <= selection <= len(one_liners):
+                        selected_cmd = one_liners[selection - 1]
+                        executed = _execute_msfconsole_command(selected_cmd)
+                        # After execution, loop continues to show menu again
+                        if executed:
+                            continue
+                    else:
+                        warn("Invalid selection.")
+                        continue
+                except ValueError:
+                    warn("Invalid selection.")
+                    continue
+            else:
+                # User chose 'n' or None - exit the loop
+                break
+
+        except KeyboardInterrupt:
+            info("\nCancelled.")
+            break
+        except Exception:
+            # Gracefully handle any prompt errors
+            break
