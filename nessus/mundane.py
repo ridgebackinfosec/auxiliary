@@ -282,12 +282,31 @@ def bulk_extract_cves_for_files(files: List[Path]) -> None:
 
     # Display results
     if results:
-        info(f"\nFound CVEs for {len(results)} plugin(s):\n")
-        for plugin_name, cves in sorted(results.items()):
-            info(f"{plugin_name}:")
-            for cve in cves:
-                info(f"  {cve}")
-            print()  # Blank line between plugins
+        # Ask user for display format
+        try:
+            format_choice = input(
+                "\nDisplay format: [S]eparated by file / [C]ombined list (default=S): "
+            ).strip().lower()
+        except KeyboardInterrupt:
+            return
+
+        if format_choice in ("c", "combined"):
+            # Combined list: all unique CVEs across all files
+            all_cves = set()
+            for cves in results.values():
+                all_cves.update(cves)
+
+            info(f"\nFound {len(all_cves)} unique CVE(s) across {len(results)} plugin(s):\n")
+            for cve in sorted(all_cves):
+                info(f"{cve}")
+        else:
+            # Separated by file (default)
+            info(f"\nFound CVEs for {len(results)} plugin(s):\n")
+            for plugin_name, cves in sorted(results.items()):
+                info(f"{plugin_name}:")
+                for cve in cves:
+                    info(f"{cve}")
+                print()  # Blank line between plugins
     else:
         warn("No CVEs found for any of the filtered files.")
 
