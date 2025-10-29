@@ -50,6 +50,20 @@ NSE_PROFILES: list[tuple[str, list[str], bool]] = [
 """NSE profile definitions: (name, script_list, is_wildcard)."""
 
 
+# ========== Severity color mapping ==========
+# Format: severity_level -> (rich_color_name, ansi_color_code)
+# This is the single source of truth for severity colors across the app
+SEVERITY_COLORS: dict[str, tuple[str, str]] = {
+    "critical": ("red", "\u001b[31m"),
+    "high": ("yellow", "\u001b[33m"),
+    "medium": ("blue", "\u001b[34m"),
+    "low": ("green", "\u001b[32m"),
+    "info": ("cyan", "\u001b[36m"),
+    "default": ("magenta", "\u001b[35m"),
+}
+"""Severity level to color mapping for Rich and ANSI outputs."""
+
+
 # ========== Validation patterns ==========
 HNAME_RE: re.Pattern[str] = re.compile(
     r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"

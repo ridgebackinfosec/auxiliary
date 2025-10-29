@@ -17,6 +17,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .ansi import fmt_action, info, warn
+from .constants import SEVERITY_COLORS
 from .fs import default_page_size, list_files, pretty_severity_label
 from .logging_setup import log_timing
 
@@ -543,6 +544,8 @@ def total_cell(count: int) -> Any:
 def severity_style(label: str) -> str:
     """Map a severity label to a color style.
 
+    Uses centralized SEVERITY_COLORS mapping from constants.py.
+
     Args:
         label: Severity level label
 
@@ -550,14 +553,11 @@ def severity_style(label: str) -> str:
         Color style name for Rich styling
     """
     normalized_label = label.strip().lower()
-    if "critical" in normalized_label:
-        return "red"
-    if "high" in normalized_label:
-        return "yellow"
-    if "medium" in normalized_label:
-        return "blue"
-    if "low" in normalized_label:
-        return "green"
-    if "info" in normalized_label:
-        return "cyan"
-    return "magenta"
+
+    # Look up color from centralized mapping
+    for severity_key, (rich_color, _) in SEVERITY_COLORS.items():
+        if severity_key in normalized_label:
+            return rich_color
+
+    # Default fallback
+    return SEVERITY_COLORS["default"][0]

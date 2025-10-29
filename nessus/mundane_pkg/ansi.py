@@ -6,6 +6,8 @@ console output. It respects the NO_COLOR environment variable for accessibility.
 
 import os
 
+from .constants import SEVERITY_COLORS
+
 
 # ========== Color configuration ==========
 NO_COLOR: bool = (os.environ.get("NO_COLOR") is not None) or (
@@ -115,6 +117,7 @@ def cyan_label(s: str) -> str:
 def colorize_severity_label(label: str) -> str:
     """Colorize a severity label based on its level.
 
+    Uses centralized SEVERITY_COLORS mapping from constants.py.
     Maps severity levels to colors:
     - Critical: Red
     - High: Yellow
@@ -130,16 +133,14 @@ def colorize_severity_label(label: str) -> str:
         Bold, colorized severity label string
     """
     normalized_label = label.strip().lower()
-    if "critical" in normalized_label:
-        color = C.RED
-    elif "high" in normalized_label:
-        color = C.YELLOW
-    elif "medium" in normalized_label:
-        color = C.BLUE
-    elif "low" in normalized_label:
-        color = C.GREEN
-    elif "info" in normalized_label:
-        color = C.CYAN
-    else:
-        color = C.MAGENTA
+
+    # Look up color from centralized mapping
+    for severity_key, (_, ansi_code) in SEVERITY_COLORS.items():
+        if severity_key in normalized_label:
+            color = "" if NO_COLOR else ansi_code
+            return f"{C.BOLD}{color}{label}{C.RESET}"
+
+    # Default fallback
+    _, default_ansi = SEVERITY_COLORS["default"]
+    color = "" if NO_COLOR else default_ansi
     return f"{C.BOLD}{color}{label}{C.RESET}"
