@@ -384,8 +384,8 @@ def show_actions_help(
     )
     table.add_row(
         Text("Analysis", style="bold"),
-        key_text("H", "Compare hosts/ports (identical)"),
-        key_text("I", "Superset / coverage groups"),
+        key_text("H", "Compare - Find files with identical host:port combinations"),
+        key_text("I", "Inclusion - Find files where one is a subset of another"),
     )
     if group_applied:
         table.add_row(

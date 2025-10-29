@@ -43,30 +43,30 @@ def header(msg: str) -> None:
 
 
 def ok(msg: str) -> None:
-    """Print a success message in green.
+    """Print a success message in green with checkmark prefix.
 
     Args:
         msg: The success message to print
     """
-    print(f"{C.GREEN}{msg}{C.RESET}")
+    print(f"{C.GREEN}✓ {msg}{C.RESET}")
 
 
 def warn(msg: str) -> None:
-    """Print a warning message in yellow.
+    """Print a warning message in yellow with warning icon prefix.
 
     Args:
         msg: The warning message to print
     """
-    print(f"{C.YELLOW}{msg}{C.RESET}")
+    print(f"{C.YELLOW}⚠ {msg}{C.RESET}")
 
 
 def err(msg: str) -> None:
-    """Print an error message in red.
+    """Print an error message in red with error icon prefix.
 
     Args:
         msg: The error message to print
     """
-    print(f"{C.RED}{msg}{C.RESET}")
+    print(f"{C.RED}✗ {msg}{C.RESET}")
 
 
 def info(msg: str) -> None:
@@ -91,15 +91,15 @@ def fmt_action(text: str) -> str:
 
 
 def fmt_reviewed(text: str) -> str:
-    """Format text as reviewed content in magenta.
+    """Format text as reviewed content in magenta with checkmark prefix.
 
     Args:
         text: The text to format as reviewed
 
     Returns:
-        Formatted string with magenta color codes
+        Formatted string with checkmark prefix and magenta color codes
     """
-    return f"{C.MAGENTA}{text}{C.RESET}"
+    return f"{C.MAGENTA}✓ {text}{C.RESET}"
 
 
 def cyan_label(s: str) -> str:

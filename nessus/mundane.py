@@ -327,7 +327,7 @@ def choose_from_list(
         items: List of items to choose from
         title: Menu title to display
         allow_back: Show [B] Back option
-        allow_exit: Show [X] Exit option
+        allow_exit: Show [Q] Quit option
 
     Returns:
         Selected item, None if back chosen, "exit" if exit chosen
@@ -342,7 +342,7 @@ def choose_from_list(
     if allow_back:
         print(fmt_action("[B] Back"))
     if allow_exit:
-        print(fmt_action("[X] Exit"))
+        print(fmt_action("[Q] Quit"))
 
     while True:
         try:
@@ -351,7 +351,7 @@ def choose_from_list(
             warn("\nInterrupted — returning.")
             raise
 
-        if allow_back and ans in ("b", "back"):
+        if allow_back and ans in ("b", "back", "q"):
             return None
         if allow_exit and ans in ("x", "exit", "q", "quit"):
             return "exit"
@@ -359,7 +359,16 @@ def choose_from_list(
             idx = int(ans)
             if 1 <= idx <= len(items):
                 return items[idx - 1]
-        warn("Invalid choice.")
+
+        options_text = f"1-{len(items)}"
+        if allow_back and allow_exit:
+            warn(f"Invalid choice. Please enter {options_text}, [B]ack, or [Q]uit.")
+        elif allow_back:
+            warn(f"Invalid choice. Please enter {options_text} or [B]ack.")
+        elif allow_exit:
+            warn(f"Invalid choice. Please enter {options_text} or [Q]uit.")
+        else:
+            warn(f"Invalid choice. Please enter {options_text}.")
 
 
 # === Scan overview helpers ===
@@ -574,36 +583,50 @@ def handle_file_view(chosen: Path) -> None:
     Args:
         chosen: Plugin file to view
     """
+    # Step 1: Ask if user wants to view or copy
     try:
-        view_choice = input(
-            "\nView file? [R]aw / [G]rouped / [H]osts-only / "
-            "[C] Copy / [N]one (default=N): "
+        action_choice = input(
+            "\n[V] View file / [C] Copy to clipboard / [Enter] Skip: "
         ).strip().lower()
     except KeyboardInterrupt:
         # User cancelled - just return to continue file processing
         return
 
-    if view_choice in ("r", "raw"):
-        text = _file_raw_paged_text(chosen)
-        menu_pager(text)
-    elif view_choice in ("g", "grouped"):
-        text = _grouped_paged_text(chosen)
-        menu_pager(text)
-    elif view_choice in ("h", "hosts", "hosts-only"):
-        text = _hosts_only_paged_text(chosen)
-        menu_pager(text)
-    elif view_choice in ("c", "copy"):
-        sub = input(
-            "Copy [R]aw / [G]rouped / [H]osts-only? (default=G): "
-        ).strip().lower()
+    if action_choice in ("", "n", "none", "skip"):
+        return
 
-        if sub in ("", "g", "grouped"):
+    # Step 2: Ask for format (applies to both view and copy)
+    format_prompt = "Format: [R]aw / [G]rouped (host:port) / [H]osts only (default=G): "
+    try:
+        format_choice = input(format_prompt).strip().lower()
+    except KeyboardInterrupt:
+        return
+
+    # Default to grouped
+    if format_choice in ("", "g", "grouped"):
+        if action_choice in ("v", "view"):
+            text = _grouped_paged_text(chosen)
+            menu_pager(text)
+        elif action_choice in ("c", "copy"):
             payload = _grouped_payload_text(chosen)
-        elif sub in ("h", "hosts", "hosts-only"):
+    elif format_choice in ("h", "hosts", "hosts-only"):
+        if action_choice in ("v", "view"):
+            text = _hosts_only_paged_text(chosen)
+            menu_pager(text)
+        elif action_choice in ("c", "copy"):
             payload = _hosts_only_payload_text(chosen)
-        else:
+    elif format_choice in ("r", "raw"):
+        if action_choice in ("v", "view"):
+            text = _file_raw_paged_text(chosen)
+            menu_pager(text)
+        elif action_choice in ("c", "copy"):
             payload = _file_raw_payload_text(chosen)
+    else:
+        warn("Invalid format choice.")
+        return
 
+    # Step 3: If copying, execute the clipboard operation
+    if action_choice in ("c", "copy"):
         ok_flag, detail = copy_to_clipboard(payload)
         if ok_flag:
             ok("Copied to clipboard.")
@@ -976,7 +999,7 @@ def process_single_file(
     tokens = [line for line in lines if line.strip()]
 
     if not tokens:
-        warn("File is empty; skipping.")
+        info("File is empty (no hosts found). This usually means the vulnerability doesn't affect any hosts.")
         skipped_total.append(chosen.name)
         return
 
@@ -1121,7 +1144,7 @@ def handle_file_list_actions(
         )
         return "help", file_filter, reviewed_filter, group_filter, sort_mode, page_idx
 
-    if ans in ("b", "back"):
+    if ans in ("b", "back", "q"):
         return "back", file_filter, reviewed_filter, group_filter, sort_mode, page_idx
 
     if ans == "n":
@@ -1241,7 +1264,7 @@ def handle_file_list_actions(
                 sort_mode,
                 page_idx,
             )
-        if choice in ("b", "back"):
+        if choice in ("b", "back", "q"):
             return (
                 None,
                 file_filter,
@@ -1647,7 +1670,7 @@ def main(args: types.SimpleNamespace) -> None:
 
         header("Select a scan")
         render_scan_table(scans)
-        print(fmt_action("[X] Exit"))
+        print(fmt_action("[Q] Quit"))
 
         try:
             ans = input("Choose: ").strip().lower()
@@ -1656,10 +1679,21 @@ def main(args: types.SimpleNamespace) -> None:
             return
 
         if ans in ("x", "exit", "q", "quit"):
+            # Confirmation if files were reviewed this session
+            if completed_total:
+                try:
+                    confirm = yesno(
+                        f"You marked {len(completed_total)} file(s) as reviewed this session. Exit?",
+                        default="n"
+                    )
+                    if not confirm:
+                        continue
+                except KeyboardInterrupt:
+                    continue
             break
 
         if not ans.isdigit() or not (1 <= int(ans) <= len(scans)):
-            warn("Invalid choice.")
+            warn(f"Invalid choice. Please enter 1-{len(scans)} or [Q]uit.")
             continue
 
         scan_dir = scans[int(ans) - 1]
@@ -1713,6 +1747,7 @@ def main(args: types.SimpleNamespace) -> None:
             render_severity_table(severities, msf_summary=msf_summary)
 
             print(fmt_action("[B] Back"))
+            info("Tip: Multi-select is supported (e.g., 1-3 or 1,3,5)")
 
             try:
                 ans = input("Choose: ").strip().lower()
@@ -1720,7 +1755,7 @@ def main(args: types.SimpleNamespace) -> None:
                 warn("\nInterrupted — returning to scan menu.")
                 break
 
-            if ans in ("b", "back"):
+            if ans in ("b", "back", "q"):
                 break
 
             options_count = len(severities) + (1 if has_msf else 0)

@@ -40,14 +40,14 @@ NETEXEC_PROTOCOLS: list[str] = [
 
 
 # ========== NSE (Nmap Scripting Engine) profiles ==========
-NSE_PROFILES: list[tuple[str, list[str], bool]] = [
-    ("Crypto", ["ssl-enum-ciphers", "ssl-cert", "ssl-date"], False),
-    ("SSH", ["ssh2-enum-algos", "ssh-auth-methods"], False),
-    ("SMB", ["smb-security-mode", "smb2-security-mode"], False),
-    ("SNMP", ["snmp*"], True),
-    ("IPMI", ["ipmi-version"], True),
+NSE_PROFILES: list[tuple[str, str, list[str], bool]] = [
+    ("Crypto", "Check SSL/TLS cipher suites and certificates", ["ssl-enum-ciphers", "ssl-cert", "ssl-date"], False),
+    ("SSH", "Enumerate SSH algorithms and authentication methods", ["ssh2-enum-algos", "ssh-auth-methods"], False),
+    ("SMB", "Check SMB security modes and signing", ["smb-security-mode", "smb2-security-mode"], False),
+    ("SNMP", "Enumerate SNMP information (requires UDP)", ["snmp*"], True),
+    ("IPMI", "Check IPMI version information (requires UDP)", ["ipmi-version"], True),
 ]
-"""NSE profile definitions: (name, script_list, is_wildcard)."""
+"""NSE profile definitions: (name, description, script_list, needs_udp)."""
 
 
 # ========== Severity color mapping ==========

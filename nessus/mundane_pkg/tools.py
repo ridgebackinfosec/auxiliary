@@ -61,34 +61,35 @@ def choose_nse_profile() -> tuple[list[str], bool]:
         is required.
     """
     header("NSE Profiles")
-    for index, (name, scripts, _) in enumerate(NSE_PROFILES, 1):
-        print(f"[{index}] {name} ({', '.join(scripts)})")
+    for index, (name, description, scripts, _) in enumerate(NSE_PROFILES, 1):
+        print(f"[{index}] {name} - {description}")
+        info(f"    Scripts: {', '.join(scripts)}")
     print(fmt_action("[N] None (no NSE profile)"))
     print(fmt_action("[B] Back"))
-    
+
     while True:
         try:
             answer = input("Choose: ").strip().lower()
         except KeyboardInterrupt:
             warn("\nInterrupted — returning to file menu.")
             return [], False
-        
-        if answer in ("b", "back"):
+
+        if answer in ("b", "back", "q"):
             return [], False
-        
+
         if answer in ("n", "none", ""):
             return [], False
-        
+
         if answer.isdigit():
             profile_index = int(answer)
             if 1 <= profile_index <= len(NSE_PROFILES):
-                name, scripts, needs_udp = NSE_PROFILES[profile_index - 1]
+                name, description, scripts, needs_udp = NSE_PROFILES[profile_index - 1]
                 ok(
                     f"Selected profile: {name} — "
                     f"including: {', '.join(scripts)}"
                 )
                 return scripts[:], needs_udp
-        
+
         warn("Invalid choice.")
 
 
@@ -207,7 +208,7 @@ def choose_tool() -> Optional[str]:
         if answer == "":
             return "nmap"
 
-        if answer in ("b", "back"):
+        if answer in ("b", "back", "q"):
             return None
 
         if answer.isdigit():
@@ -248,7 +249,7 @@ def choose_netexec_protocol() -> Optional[str]:
         if answer == "":
             return "smb"
         
-        if answer in ("b", "back"):
+        if answer in ("b", "back", "q"):
             return None
         
         if answer.isdigit():
@@ -341,7 +342,7 @@ def command_review_menu(cmd_list_or_str: list[str] | str) -> str:
         if choice in ("2", "c", "copy"):
             return "copy"
 
-        if choice in ("b", "back"):
+        if choice in ("b", "back", "q"):
             return "cancel"
 
         warn("Enter 1, 2, or [B]ack.")
@@ -406,7 +407,20 @@ def copy_to_clipboard(text: str) -> tuple[bool, str]:
         except Exception as exc:
             return False, f"Clipboard error: {exc}"
     
-    return False, "No suitable clipboard method found."
+    # Provide platform-specific installation guidance
+    if sys.platform.startswith("linux"):
+        return False, (
+            "No clipboard tool found. Install one of: xclip, wl-copy, or xsel.\n"
+            "    Debian/Ubuntu: sudo apt install xclip\n"
+            "    Fedora: sudo dnf install xclip\n"
+            "    Arch: sudo pacman -S xclip"
+        )
+    elif sys.platform.startswith("darwin"):
+        return False, "Clipboard not available. pbcopy should be pre-installed on macOS."
+    elif os.name == "nt":
+        return False, "Clipboard not available. clip should be pre-installed on Windows."
+    else:
+        return False, "No suitable clipboard method found for your platform."
 
 
 # ========== Metasploit Search Helpers ==========
@@ -851,8 +865,8 @@ def interactive_msf_search(plugin_url: str) -> None:
     
     if not METASPLOIT_DEPS_AVAILABLE:
         warn(
-            "Required libraries (requests, beautifulsoup4) are not "
-            "installed; cannot perform MSF search."
+            "Required libraries (requests, beautifulsoup4) are not installed.\n"
+            "Install with: pip install requests beautifulsoup4"
         )
         return
     
