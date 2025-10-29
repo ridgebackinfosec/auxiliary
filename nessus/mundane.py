@@ -614,7 +614,7 @@ def handle_file_view(chosen: Path, plugin_url: Optional[str] = None) -> None:
             if cves:
                 info(f"Found {len(cves)} CVE(s):")
                 for cve in cves:
-                    info(f"  • {cve}")
+                    info(f"{cve}")
             else:
                 warn("No CVEs found on plugin page.")
         except Exception as exc:

@@ -1037,7 +1037,7 @@ def interactive_msf_search(plugin_url: str) -> None:
     if cves:
         info("Found CVE(s):")
         for cve in cves:
-            info(f"  • {cve}")
+            info(f"{cve}")
 
     if metasploit_terms:
         info("\nFound Metasploit search term(s):")
