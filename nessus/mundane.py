@@ -15,6 +15,8 @@ if str(_here) not in sys.path:
     sys.path.insert(0, str(_here))
 
 from mundane_pkg import (
+    # logging
+    setup_logging,
     # ops
     require_cmd,
     resolve_cmd,
@@ -69,6 +71,9 @@ from mundane_pkg import (
     command_review_menu,
     copy_to_clipboard,
     choose_nse_profile,
+    # types:
+    ToolContext,
+    CommandResult,
     # analysis
     compare_filtered,
     analyze_inclusions,
@@ -1776,6 +1781,9 @@ def main(args: types.SimpleNamespace) -> None:
     Args:
         args: Command-line arguments namespace with export_root and no_tools
     """
+    # Initialize logging
+    setup_logging()
+
     use_sudo = root_or_sudo_available()
     if not use_sudo:
         warn(
