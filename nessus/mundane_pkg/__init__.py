@@ -42,5 +42,9 @@ from .tool_registry import (
     get_tool_by_menu_index, get_tool_count,
     register_tool,
 )
+from .tool_context import (
+    ToolContext,
+    CommandResult,
+)
 # Note: tool_definitions is NOT imported here to avoid circular imports
 # Tools are registered lazily on first access via _ensure_registered()

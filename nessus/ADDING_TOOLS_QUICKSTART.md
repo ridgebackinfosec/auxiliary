@@ -1,10 +1,12 @@
 # Quick Start: Adding a New Tool to Mundane
 
-This guide shows you how to add a new tool to mundane in **3 simple steps**.
+This guide shows you how to add a new tool to mundane in **3 simple steps** using the **Unified Workflow Pattern**.
 
 ## Before You Start
 
 Make sure you understand:
+- **ToolContext**: Unified parameter object passed to all workflows
+- **CommandResult**: Standardized return type from workflows
 - **Command Builder**: A function that constructs the command string/list
 - **Workflow Builder**: A function that prompts the user for parameters
 - **Tool Registry**: A central database of all available tools
@@ -37,20 +39,20 @@ def build_mytool_cmd(
 
 ### Step 2: Write Workflow Builder (in `mundane.py`)
 
-Add a function that gathers user input and calls the command builder:
+**Important:** Use `ToolContext` parameter and return `CommandResult`:
 
 ```python
-def _build_mytool_workflow(
-    workdir: Path,
-    results_dir: Path,
-    oabase: Path,
-) -> Optional[Tuple[Union[str, List[str]], Union[str, List[str]], str]]:
+def _build_mytool_workflow(ctx: ToolContext) -> Optional[CommandResult]:
     """
     Build mytool command through interactive prompts.
 
+    Args:
+        ctx: Unified tool context containing all parameters
+
     Returns:
-        Tuple of (command, display_command, artifact_note) or None if cancelled
+        CommandResult with command details, or None if cancelled
     """
+    from mundane_pkg.tool_context import CommandResult
     from mundane_pkg.tools import build_mytool_cmd
 
     # Prompt for parameters
@@ -58,19 +60,25 @@ def _build_mytool_workflow(
         param1 = input("Enter param1: ").strip()
         param2 = Path(input("Enter param2 path: ").strip())
     except KeyboardInterrupt:
-        return None
+        return None  # User cancelled
 
+    # Validation
     if not param1:
         warn("No param1 provided.")
         return None
 
-    # Build output path
-    output_file = oabase.parent / f"{oabase.name}.mytool.txt"
+    # Build output path using context
+    output_file = ctx.oabase.parent / f"{ctx.oabase.name}.mytool.txt"
 
     # Build command
     cmd = build_mytool_cmd(param1, param2, output_file)
 
-    return cmd, cmd, f"MyTool output: {output_file}"
+    # Return unified result
+    return CommandResult(
+        command=cmd,
+        display_command=cmd,
+        artifact_note=f"MyTool output: {output_file}",
+    )
 ```
 
 ### Step 3: Register in Tool Registry (in `mundane_pkg/tool_definitions.py`)

@@ -638,26 +638,18 @@ def handle_file_view(chosen: Path) -> None:
 # === Tool execution workflows ===
 
 
-def _build_nmap_workflow(
-    tcp_ips: Path,
-    udp_ips: Path,
-    ports_str: str,
-    use_sudo: bool,
-    oabase: Path,
-) -> Optional[Tuple[Union[str, List[str]], Union[str, List[str]], str]]:
+def _build_nmap_workflow(ctx: "ToolContext") -> Optional["CommandResult"]:
     """
     Build nmap command through interactive prompts.
 
     Args:
-        tcp_ips: Path to TCP IP list file
-        udp_ips: Path to UDP IP list file
-        ports_str: Comma-separated port list
-        use_sudo: Whether sudo is available
-        oabase: Output file base path for nmap -oA
+        ctx: Unified tool context containing all parameters
 
     Returns:
-        Tuple of (command, display_command, artifact_note) or None if interrupted
+        CommandResult with command details, or None if interrupted
     """
+    from mundane_pkg.tool_context import CommandResult
+
     try:
         udp_ports = yesno(
             "\nDo you want to perform UDP scanning instead of TCP?", default="n"
@@ -699,25 +691,29 @@ def _build_nmap_workflow(
 
     nse_option = f"--script={','.join(nse_scripts)}" if nse_scripts else ""
 
-    ips_file = udp_ips if udp_ports else tcp_ips
+    ips_file = ctx.udp_ips if udp_ports else ctx.tcp_ips
     require_cmd("nmap")
-    cmd = build_nmap_cmd(udp_ports, nse_option, ips_file, ports_str, use_sudo, oabase)
-    return cmd, cmd, f"Results base:  {oabase}  (nmap -oA)"
+    cmd = build_nmap_cmd(udp_ports, nse_option, ips_file, ctx.ports_str, ctx.use_sudo, ctx.oabase)
+
+    return CommandResult(
+        command=cmd,
+        display_command=cmd,
+        artifact_note=f"Results base:  {ctx.oabase}  (nmap -oA)",
+    )
 
 
-def _build_netexec_workflow(
-    tcp_ips: Path, oabase: Path
-) -> Optional[Tuple[Union[str, List[str]], Union[str, List[str]], str, Optional[Path]]]:
+def _build_netexec_workflow(ctx: "ToolContext") -> Optional["CommandResult"]:
     """
     Build netexec command through interactive prompts.
 
     Args:
-        tcp_ips: Path to TCP IP list file
-        oabase: Output file base path
+        ctx: Unified tool context containing all parameters
 
     Returns:
-        Tuple of (command, display_command, artifact_note, relay_path) or None
+        CommandResult with command details, or None if interrupted
     """
+    from mundane_pkg.tool_context import CommandResult
+
     protocol = choose_netexec_protocol()
     if not protocol:
         return None
@@ -728,42 +724,36 @@ def _build_netexec_workflow(
         info("Skipping run; returning to tool menu.")
         return None
 
-    cmd, nxc_log, relay_path = build_netexec_cmd(exec_bin, protocol, tcp_ips, oabase)
-    return cmd, cmd, f"NetExec log:   {nxc_log}", relay_path
+    cmd, nxc_log, relay_path = build_netexec_cmd(exec_bin, protocol, ctx.tcp_ips, ctx.oabase)
+
+    return CommandResult(
+        command=cmd,
+        display_command=cmd,
+        artifact_note=f"NetExec log:   {nxc_log}",
+        relay_path=relay_path,
+    )
 
 
-def _build_custom_workflow(
-    tcp_ips: Path,
-    udp_ips: Path,
-    tcp_sockets: Path,
-    ports_str: str,
-    workdir: Path,
-    results_dir: Path,
-    oabase: Path,
-) -> Optional[Tuple[str, str, str]]:
+def _build_custom_workflow(ctx: "ToolContext") -> Optional["CommandResult"]:
     """
     Build custom command from user template with placeholder substitution.
 
     Args:
-        tcp_ips: Path to TCP IP list
-        udp_ips: Path to UDP IP list
-        tcp_sockets: Path to TCP host:port list
-        ports_str: Comma-separated ports
-        workdir: Working directory path
-        results_dir: Results output directory
-        oabase: Output file base path
+        ctx: Unified tool context containing all parameters
 
     Returns:
-        Tuple of (command, display_command, artifact_note) or None if cancelled
+        CommandResult with command details, or None if cancelled
     """
+    from mundane_pkg.tool_context import CommandResult
+
     mapping = {
-        "{TCP_IPS}": tcp_ips,
-        "{UDP_IPS}": udp_ips,
-        "{TCP_HOST_PORTS}": tcp_sockets,
-        "{PORTS}": ports_str or "",
-        "{WORKDIR}": workdir,
-        "{RESULTS_DIR}": results_dir,
-        "{OABASE}": oabase,
+        "{TCP_IPS}": ctx.tcp_ips,
+        "{UDP_IPS}": ctx.udp_ips,
+        "{TCP_HOST_PORTS}": ctx.tcp_sockets,
+        "{PORTS}": ctx.ports_str or "",
+        "{WORKDIR}": ctx.workdir,
+        "{RESULTS_DIR}": ctx.results_dir,
+        "{OABASE}": ctx.oabase,
     }
     custom_command_help(mapping)
 
@@ -779,7 +769,12 @@ def _build_custom_workflow(
         return None
 
     rendered = render_placeholders(template, mapping)
-    return rendered, rendered, f"OABASE path:   {oabase}"
+
+    return CommandResult(
+        command=rendered,
+        display_command=rendered,
+        artifact_note=f"OABASE path:   {ctx.oabase}",
+    )
 
 
 def run_tool_workflow(
@@ -878,31 +873,15 @@ def run_tool_workflow(
 
         _tmp_dir, oabase = build_results_paths(scan_dir, sev_dir, chosen.name)
         results_dir = out_dir_static
-        nxc_relay_path = None
 
         # ====================================================================
-        # Tool Dispatch - Registry-based with backward compatibility
+        # Tool Dispatch - Unified Context Pattern
         # ====================================================================
-        # Call the appropriate workflow builder based on tool id
-        # Each workflow has different parameters, so we handle them separately
+        # Build context once, pass to all workflows (no more per-tool params!)
         # ====================================================================
 
-        if tool_choice == "nmap":
-            result = selected_tool.workflow_builder(
-                tcp_ips, udp_ips, ports_str, use_sudo, oabase
-            )
-            if result is None:
-                break
-            cmd, display_cmd, artifact_note = result
-
-        elif tool_choice == "netexec":
-            result = selected_tool.workflow_builder(tcp_ips, oabase)
-            if result is None:
-                continue
-            cmd, display_cmd, artifact_note, nxc_relay_path = result
-
-        elif tool_choice == "metasploit":
-            # Metasploit has special handling (web search, no command building)
+        # Special handling for metasploit (doesn't use standard workflow)
+        if tool_choice == "metasploit":
             if plugin_url:
                 from mundane_pkg import tools as _tools
 
@@ -912,24 +891,40 @@ def run_tool_workflow(
                     warn("Metasploit search failed; continuing to tool menu.")
             continue
 
-        elif tool_choice == "custom":
-            result = selected_tool.workflow_builder(
-                tcp_ips,
-                udp_ips,
-                tcp_sockets,
-                ports_str,
-                workdir,
-                results_dir,
-                oabase,
-            )
-            if result is None:
-                break
-            cmd, display_cmd, artifact_note = result
+        # Build unified context for all other tools
+        from mundane_pkg.tool_context import ToolContext
 
-        else:
-            # This should never happen if registry is properly configured
-            warn(f"Tool '{tool_choice}' registered but not implemented in dispatch.")
-            continue
+        ctx = ToolContext(
+            tcp_ips=tcp_ips,
+            udp_ips=udp_ips,
+            tcp_sockets=tcp_sockets,
+            ports_str=ports_str,
+            use_sudo=use_sudo,
+            workdir=workdir,
+            results_dir=results_dir,
+            oabase=oabase,
+            scan_dir=scan_dir,
+            sev_dir=sev_dir,
+            plugin_url=plugin_url,
+            chosen_file=chosen,
+        )
+
+        # Call workflow with unified context (same signature for all tools!)
+        result = selected_tool.workflow_builder(ctx)
+
+        # Handle cancellation
+        if result is None:
+            # User cancelled - break for nmap/custom, continue for netexec
+            if tool_choice in ("nmap", "custom"):
+                break
+            else:
+                continue
+
+        # Extract results from unified CommandResult
+        cmd = result.command
+        display_cmd = result.display_command
+        artifact_note = result.artifact_note
+        nxc_relay_path = result.relay_path
 
         action = command_review_menu(display_cmd)
 
