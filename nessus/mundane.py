@@ -2395,32 +2395,30 @@ def summary(
     show_scan_summary(scan_dir, top_ports_n=top_ports)
 
 
-def show_nessus_tool_suggestions(out_dir: Path) -> None:
+def show_nessus_tool_suggestions(nessus_file: Path) -> None:
     """
     Display suggested tool commands after wizard export completes.
 
     Args:
-        out_dir: Export directory containing scan artifacts
+        nessus_file: Path to the original .nessus file
     """
     header("Suggested Tool Commands")
-    info("\nYou can use these commands to work with the exported data:\n")
+    info("\nYour .nessus file can ALSO be used as the input for these tools:\n")
 
     # eyewitness command
-    info(fmt_action("1. eyewitness (web screenshot tool):"))
-    eyewitness_cmd = f"eyewitness -f {out_dir}/hosts.txt --web --no-prompt"
+    info(fmt_action("1. eyewitness (screenshot and report tool):"))
+    eyewitness_cmd = f"eyewitness -x {nessus_file} -d ~/eyewitness_report --results 500 --user-agent \"Mozilla/5.0 (X11; Linux x86_64; rv:102.0) Gecko/20100101 Firefox/102.0\" --timeout 30"
     info(f"   {eyewitness_cmd}\n")
 
     # gowitness command
-    info(fmt_action("2. gowitness (web screenshot tool):"))
-    gowitness_cmd = f"gowitness file -f {out_dir}/hosts.txt"
+    info(fmt_action("2. gowitness (screenshot tool):"))
+    gowitness_cmd = f"gowitness scan nessus -f {nessus_file} --chrome-user-agent \"Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0\" --write-db -t 20"
     info(f"   {gowitness_cmd}\n")
 
     # msfconsole db_import command
     info(fmt_action("3. msfconsole (Metasploit import):"))
-    # Find the .nessus file (user should specify)
-    info("   Start msfconsole, then:")
-    msfconsole_cmd = "   db_import /path/to/your/scan.nessus"
-    info(f"{msfconsole_cmd}\n")
+    msfconsole_cmd = f"msfconsole -q -x \"db_import {nessus_file} ; hosts; services; vulns; exit\""
+    info(f"   {msfconsole_cmd}\n")
 
     info("Tip: Copy these commands to run them in your terminal.")
 
@@ -2481,7 +2479,7 @@ def wizard(
 
     # Show suggested tool commands
     print()  # Blank line for spacing
-    show_nessus_tool_suggestions(out_dir)
+    show_nessus_tool_suggestions(nessus)
 
     if review:
         args = types.SimpleNamespace(export_root=str(out_dir), no_tools=False)
