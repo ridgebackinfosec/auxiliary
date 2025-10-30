@@ -23,7 +23,7 @@ from .render import (
 from .fs import (
     list_dirs, list_files, read_text_lines, safe_print_file,
     build_results_paths, is_review_complete, rename_review_complete,
-    default_page_size, pretty_severity_label, write_work_files
+    undo_review_complete, default_page_size, pretty_severity_label, write_work_files
 )
 from .tools import (
     build_nmap_cmd, build_netexec_cmd,
@@ -45,6 +45,18 @@ from .tool_registry import (
 from .tool_context import (
     ToolContext,
     CommandResult,
+)
+from .session import (
+    SessionState,
+    save_session,
+    load_session,
+    delete_session,
+    get_session_file_path,
+)
+from .workflow_mapper import (
+    Workflow,
+    WorkflowStep,
+    WorkflowMapper,
 )
 # Note: tool_definitions is NOT imported here to avoid circular imports
 # Tools are registered lazily on first access via _ensure_registered()

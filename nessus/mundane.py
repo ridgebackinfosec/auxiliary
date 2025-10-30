@@ -60,6 +60,7 @@ from mundane_pkg import (
     safe_print_file,
     build_results_paths,
     rename_review_complete,
+    undo_review_complete,
     write_work_files,
     # tools:
     build_nmap_cmd,
@@ -74,6 +75,16 @@ from mundane_pkg import (
     # types:
     ToolContext,
     CommandResult,
+    # session:
+    SessionState,
+    save_session,
+    load_session,
+    delete_session,
+    get_session_file_path,
+    # workflow_mapper:
+    Workflow,
+    WorkflowStep,
+    WorkflowMapper,
     # analysis
     compare_filtered,
     analyze_inclusions,
@@ -662,24 +673,44 @@ def _hosts_only_paged_text(path: Path) -> str:
 # === File viewing workflow ===
 
 
-def handle_file_view(chosen: Path, plugin_url: Optional[str] = None) -> None:
+def handle_file_view(chosen: Path, plugin_url: Optional[str] = None, workflow_mapper: Optional[WorkflowMapper] = None) -> None:
     """
-    Interactive file viewing menu (raw/grouped/hosts-only/copy/CVE info).
+    Interactive file viewing menu (raw/grouped/hosts-only/copy/CVE info/workflow).
 
     Args:
         chosen: Plugin file to view
         plugin_url: Optional Tenable plugin URL for CVE extraction
+        workflow_mapper: Optional workflow mapper for plugin workflows
     """
-    # Step 1: Ask if user wants to view, copy, or see CVE info
+    # Check if workflow is available
+    has_workflow = False
+    if workflow_mapper:
+        plugin_id = _plugin_id_from_filename(chosen)
+        has_workflow = plugin_id and workflow_mapper.has_workflow(plugin_id)
+
+    # Step 1: Ask if user wants to view, copy, see CVE info, or see workflow
+    workflow_option = " / [W] Workflow" if has_workflow else ""
     try:
         action_choice = input(
-            "\n[V] View file / [E] CVE info / [C] Copy to clipboard / [Enter] Skip: "
+            f"\n[V] View file / [E] CVE info / [C] Copy to clipboard{workflow_option} / [Enter] Skip: "
         ).strip().lower()
     except KeyboardInterrupt:
         # User cancelled - just return to continue file processing
         return
 
     if action_choice in ("", "n", "none", "skip"):
+        return
+
+    # Handle workflow option
+    if action_choice in ("w", "workflow"):
+        if not has_workflow:
+            warn("No workflow available for this plugin.")
+            return
+
+        plugin_id = _plugin_id_from_filename(chosen)
+        workflow = workflow_mapper.get_workflow(plugin_id)
+        if workflow:
+            display_workflow(workflow)
         return
 
     # Handle CVE info option
@@ -746,6 +777,176 @@ def handle_file_view(chosen: Path, plugin_url: Optional[str] = None) -> None:
         else:
             warn(f"{detail} Printing below for manual copy:")
             print(payload)
+
+
+def display_workflow(workflow: Workflow) -> None:
+    """
+    Display a verification workflow for a plugin.
+
+    Args:
+        workflow: Workflow object to display
+    """
+    from rich.console import Console
+    from rich.panel import Panel
+
+    console = Console()
+
+    # Header
+    header(f"Verification Workflow: {workflow.plugin_name}")
+    info(f"Plugin ID: {workflow.plugin_id}")
+    info(f"Severity: {colorize_severity_label(workflow.severity.capitalize())}")
+    info(f"Description: {workflow.description}")
+    print()
+
+    # Steps
+    for idx, step in enumerate(workflow.steps, 1):
+        step_panel = Panel(
+            f"[bold cyan]{step.title}[/bold cyan]\n\n"
+            + "\n".join(f"  {cmd}" for cmd in step.commands)
+            + (f"\n\n[yellow]Notes:[/yellow] {step.notes}" if step.notes else ""),
+            title=f"Step {idx}",
+            border_style="cyan",
+        )
+        console.print(step_panel)
+        print()
+
+    # References
+    if workflow.references:
+        info("References:")
+        for ref in workflow.references:
+            print(f"  - {ref}")
+        print()
+
+    info("Press [Enter] to continue...")
+    try:
+        input()
+    except KeyboardInterrupt:
+        pass
+
+
+def review_complete_workflow(
+    chosen: Path,
+    sev_dir: Path,
+    hosts: list[str],
+    ports_str: str,
+    plugin_url: Optional[str],
+    completed_total: list[str],
+    reviewed_total: list[str],
+    show_severity: bool,
+    workflow_mapper: Optional[WorkflowMapper] = None,
+) -> bool:
+    """
+    Interactive workflow for review-complete prompt with context loop.
+
+    Loops until user presses [Enter] to proceed. Offers actions:
+    - [V] View file again
+    - [E] CVE info
+    - [C] Copy to clipboard
+    - [W] Workflow (if available)
+    - [Enter] Proceed to review-complete prompt
+
+    Args:
+        chosen: Plugin file being reviewed
+        sev_dir: Severity directory
+        hosts: Parsed host list
+        ports_str: Detected ports string
+        plugin_url: Optional Tenable plugin URL
+        completed_total: List to track completed files
+        reviewed_total: List to track reviewed files
+        show_severity: Whether to show severity label
+        workflow_mapper: Optional workflow mapper for plugin workflows
+
+    Returns:
+        True if completion decision was made, False otherwise
+    """
+    while True:
+        # Restate file summary
+        header("Review Summary")
+        if show_severity:
+            info(f"File: {chosen.name}  — {pretty_severity_label(sev_dir.name)}")
+        else:
+            info(f"File: {chosen.name}")
+
+        pd_line = _plugin_details_line(chosen)
+        if pd_line:
+            info(pd_line)
+
+        info(f"Hosts: {len(hosts)}")
+        if hosts:
+            info(f"Example: {hosts[0]}")
+        if ports_str:
+            info(f"Ports: {ports_str}")
+
+        # Check if workflow is available
+        has_workflow = False
+        if workflow_mapper:
+            plugin_id = _plugin_id_from_filename(chosen)
+            has_workflow = plugin_id and workflow_mapper.has_workflow(plugin_id)
+
+        # Offer actions
+        workflow_option = "  [W] Workflow" if has_workflow else ""
+        print(fmt_action(f"\n[V] View  [E] CVE info  [C] Copy{workflow_option}  [Enter] Continue to mark complete"))
+
+        try:
+            action = input("Action: ").strip().lower()
+        except KeyboardInterrupt:
+            return False
+
+        if action in ("", "enter", "continue"):
+            # User wants to proceed to review-complete prompt
+            break
+        elif action in ("v", "view"):
+            handle_file_view(chosen, plugin_url=plugin_url, workflow_mapper=workflow_mapper)
+        elif action in ("w", "workflow"):
+            if not has_workflow:
+                warn("No workflow available for this plugin.")
+            else:
+                plugin_id = _plugin_id_from_filename(chosen)
+                workflow = workflow_mapper.get_workflow(plugin_id)
+                if workflow:
+                    display_workflow(workflow)
+        elif action in ("e", "cve"):
+            if not plugin_url:
+                warn("No plugin URL available for CVE extraction.")
+            else:
+                from mundane_pkg.tools import _fetch_html, _extract_cves_from_html
+
+                try:
+                    header("CVE Information")
+                    info("Fetching plugin page...")
+                    html = _fetch_html(plugin_url)
+                    cves = _extract_cves_from_html(html)
+
+                    if cves:
+                        info(f"Found {len(cves)} CVE(s):")
+                        for cve in cves:
+                            info(f"{cve}")
+                    else:
+                        warn("No CVEs found on plugin page.")
+                except Exception as exc:
+                    warn(f"Failed to fetch CVE information: {exc}")
+        elif action in ("c", "copy"):
+            # Copy in grouped format by default
+            payload = _grouped_payload_text(chosen)
+            ok_flag, detail = copy_to_clipboard(payload)
+            if ok_flag:
+                ok("Copied to clipboard.")
+            else:
+                warn(f"{detail} Printing below for manual copy:")
+                print(payload)
+        else:
+            warn("Invalid action. Use V/E/C or press Enter.")
+
+    # After loop, ask for review-complete
+    try:
+        if yesno("\nMark this file as REVIEW_COMPLETE?", default="n"):
+            newp = rename_review_complete(chosen)
+            completed_total.append(newp.name if newp != chosen else chosen.name)
+        else:
+            reviewed_total.append(chosen.name)
+        return True
+    except KeyboardInterrupt:
+        return False
 
 
 # === Tool execution workflows ===
@@ -1105,6 +1306,7 @@ def process_single_file(
     reviewed_total: List[str],
     completed_total: List[str],
     show_severity: bool = False,
+    workflow_mapper: Optional[WorkflowMapper] = None,
 ) -> None:
     """
     Process a single plugin file: preview, view, run tools, mark complete.
@@ -1119,6 +1321,7 @@ def process_single_file(
         reviewed_total: List to track reviewed files
         completed_total: List to track completed files
         show_severity: Whether to show severity label (for MSF mode)
+        workflow_mapper: Optional workflow mapper for plugin workflows
     """
     lines = read_text_lines(chosen)
     tokens = [line for line in lines if line.strip()]
@@ -1157,23 +1360,15 @@ def process_single_file(
         info(f"Ports detected: {ports_str}")
 
     # View file
-    handle_file_view(chosen, plugin_url=plugin_url)
+    handle_file_view(chosen, plugin_url=plugin_url, workflow_mapper=workflow_mapper)
 
     completion_decided = False
 
     if args.no_tools:
         info("(no-tools mode active — skipping tool selection)")
-        try:
-            if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
-                newp = rename_review_complete(chosen)
-                completed_total.append(
-                    newp.name if newp != chosen else chosen.name
-                )
-            else:
-                reviewed_total.append(chosen.name)
-            completion_decided = True
-        except KeyboardInterrupt:
-            pass
+        completion_decided = review_complete_workflow(
+            chosen, sev_dir, hosts, ports_str, plugin_url, completed_total, reviewed_total, show_severity, workflow_mapper
+        )
         return
 
     try:
@@ -1182,17 +1377,9 @@ def process_single_file(
         return
 
     if not do_scan:
-        try:
-            if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
-                newp = rename_review_complete(chosen)
-                completed_total.append(
-                    newp.name if newp != chosen else chosen.name
-                )
-            else:
-                reviewed_total.append(chosen.name)
-            completion_decided = True
-        except KeyboardInterrupt:
-            pass
+        completion_decided = review_complete_workflow(
+            chosen, sev_dir, hosts, ports_str, plugin_url, completed_total, reviewed_total, show_severity, workflow_mapper
+        )
         return
 
     # Run tool workflow
@@ -1201,16 +1388,9 @@ def process_single_file(
     )
 
     if not completion_decided:
-        try:
-            if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
-                newp = rename_review_complete(chosen)
-                completed_total.append(
-                    newp.name if newp != chosen else chosen.name
-                )
-            else:
-                reviewed_total.append(chosen.name)
-        except KeyboardInterrupt:
-            pass
+        review_complete_workflow(
+            chosen, sev_dir, hosts, ports_str, plugin_url, completed_total, reviewed_total, show_severity, workflow_mapper
+        )
 
 
 # === File list action handler ===
@@ -1344,7 +1524,7 @@ def handle_file_list_actions(
             else:
                 print(f"[{idx}] {fmt_reviewed(file.name)}")
 
-        print(fmt_action("[?] Help  [F] Set filter  [C] Clear filter  [B] Back"))
+        print(fmt_action("[?] Help  [U] Undo review-complete  [F] Set filter  [C] Clear filter  [B] Back"))
 
         try:
             choice = input("Action or [B]ack: ").strip().lower()
@@ -1361,6 +1541,60 @@ def handle_file_list_actions(
 
         if choice in ("?", "help"):
             show_reviewed_help()
+            return (
+                None,
+                file_filter,
+                reviewed_filter,
+                group_filter,
+                sort_mode,
+                page_idx,
+            )
+        if choice == "u":
+            # Undo review-complete for one or more files
+            if not filtered_reviewed:
+                warn("No reviewed files to undo.")
+                return (
+                    None,
+                    file_filter,
+                    reviewed_filter,
+                    group_filter,
+                    sort_mode,
+                    page_idx,
+                )
+
+            try:
+                selection = input("Enter file number(s) to undo (e.g., 1 or 1,3,5) or [A]ll: ").strip()
+            except KeyboardInterrupt:
+                return (
+                    None,
+                    file_filter,
+                    reviewed_filter,
+                    group_filter,
+                    sort_mode,
+                    page_idx,
+                )
+
+            if selection.lower() == "a":
+                files_to_undo = filtered_reviewed
+            else:
+                try:
+                    indices = [int(i.strip()) for i in selection.split(",")]
+                    files_to_undo = [filtered_reviewed[i - 1] for i in indices if 1 <= i <= len(filtered_reviewed)]
+                except (ValueError, IndexError):
+                    warn("Invalid selection.")
+                    return (
+                        None,
+                        file_filter,
+                        reviewed_filter,
+                        group_filter,
+                        sort_mode,
+                        page_idx,
+                    )
+
+            # Undo each file (lists will be regenerated on next loop)
+            for file_path in files_to_undo:
+                undo_review_complete(file_path)
+
             return (
                 None,
                 file_filter,
@@ -1574,6 +1808,7 @@ def browse_file_list(
     reviewed_total: List[str],
     completed_total: List[str],
     is_msf_mode: bool = False,
+    workflow_mapper: Optional[WorkflowMapper] = None,
 ) -> None:
     """
     Browse and interact with file list (unified for severity and MSF modes).
@@ -1583,6 +1818,7 @@ def browse_file_list(
         sev_dir: Severity directory (placeholder for MSF mode)
         files_getter: Function returning list of (file, severity_dir) tuples
         severity_label: Display label for the severity
+        workflow_mapper: Optional workflow mapper for plugin workflows
         args: Command-line arguments
         use_sudo: Whether sudo is available
         skipped_total: List to track skipped files
@@ -1766,12 +2002,108 @@ def browse_file_list(
                 reviewed_total,
                 completed_total,
                 show_severity=is_msf_mode,
+                workflow_mapper=workflow_mapper,
             )
         elif action_type is None:
             continue
 
 
 # === Main application logic ===
+
+
+def show_session_statistics(
+    session_start_time,
+    reviewed_total: list[str],
+    completed_total: list[str],
+    skipped_total: list[str],
+    scan_dir: Path,
+) -> None:
+    """
+    Display rich session statistics at the end of a review session.
+
+    Args:
+        session_start_time: Datetime when session started
+        reviewed_total: List of reviewed (not marked complete) files
+        completed_total: List of marked complete files
+        skipped_total: List of skipped (empty) files
+        scan_dir: Scan directory for severity analysis
+    """
+    from datetime import datetime
+    from rich.table import Table
+    from rich.console import Console
+
+    console = Console()
+
+    # Calculate session duration
+    session_end_time = datetime.now()
+    duration = session_end_time - session_start_time
+    hours, remainder = divmod(int(duration.total_seconds()), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    duration_str = f"{hours}h {minutes}m {seconds}s" if hours > 0 else f"{minutes}m {seconds}s"
+
+    header("Session Statistics")
+
+    # Overall stats table
+    overall_table = Table(show_header=True, header_style="bold cyan")
+    overall_table.add_column("Metric", style="cyan")
+    overall_table.add_column("Count", justify="right", style="yellow")
+
+    overall_table.add_row("Session Duration", duration_str)
+    overall_table.add_row("Files Reviewed (not marked)", str(len(reviewed_total)))
+    overall_table.add_row("Files Marked Complete", str(len(completed_total)))
+    overall_table.add_row("Files Skipped (empty)", str(len(skipped_total)))
+    overall_table.add_row("Total Files Processed", str(len(reviewed_total) + len(completed_total) + len(skipped_total)))
+
+    console.print(overall_table)
+    print()
+
+    # Per-severity breakdown (for completed files only)
+    if completed_total:
+        severity_counts = {}
+
+        # Walk through scan directory to find severity levels
+        for sev_dir in scan_dir.iterdir():
+            if not sev_dir.is_dir():
+                continue
+            sev_label = pretty_severity_label(sev_dir.name)
+            count = sum(1 for name in completed_total if any(
+                (sev_dir / fname).exists() or (sev_dir / f"REVIEW_COMPLETE-{fname}").exists()
+                for fname in [name, name.replace("REVIEW_COMPLETE-", "")]
+            ))
+            if count > 0:
+                severity_counts[sev_label] = count
+
+        if severity_counts:
+            sev_table = Table(show_header=True, header_style="bold cyan")
+            sev_table.add_column("Severity Level", style="cyan")
+            sev_table.add_column("Completed Count", justify="right", style="yellow")
+
+            for sev_label in sorted(severity_counts.keys()):
+                sev_col = colorize_severity_label(sev_label)
+                sev_table.add_row(sev_col, str(severity_counts[sev_label]))
+
+            info("Per-Severity Breakdown:")
+            console.print(sev_table)
+            print()
+
+    # File lists (collapsed by default, show on demand)
+    if reviewed_total:
+        info(f"Reviewed files ({len(reviewed_total)}):")
+        for name in reviewed_total:
+            print(f"  - {name}")
+        print()
+
+    if completed_total:
+        info(f"Marked complete ({len(completed_total)}):")
+        for name in completed_total:
+            print(f"  - {fmt_reviewed(name)}")
+        print()
+
+    if skipped_total:
+        info(f"Skipped (empty) ({len(skipped_total)}):")
+        for name in skipped_total:
+            print(f"  - {name}")
+        print()
 
 
 def main(args: types.SimpleNamespace) -> None:
@@ -1783,6 +2115,15 @@ def main(args: types.SimpleNamespace) -> None:
     """
     # Initialize logging
     setup_logging()
+
+    # Track session start time
+    from datetime import datetime
+    session_start_time = datetime.now()
+
+    # Initialize workflow mapper
+    workflow_mapper = WorkflowMapper()
+    if workflow_mapper.count() > 0:
+        info(f"Loaded {workflow_mapper.count()} workflow mapping(s) from workflow_mappings.yaml")
 
     use_sudo = root_or_sudo_available()
     if not use_sudo:
@@ -1840,6 +2181,34 @@ def main(args: types.SimpleNamespace) -> None:
             continue
 
         scan_dir = scans[int(ans) - 1]
+
+        # Check for existing session
+        previous_session = load_session(scan_dir)
+        if previous_session:
+            from datetime import datetime
+            session_date = datetime.fromisoformat(previous_session.session_start)
+            header("Previous Session Found")
+            info(f"Session started: {session_date.strftime('%Y-%m-%d %H:%M:%S')}")
+            info(f"Reviewed: {len(previous_session.reviewed_files)}")
+            info(f"Completed: {len(previous_session.completed_files)}")
+            info(f"Skipped: {len(previous_session.skipped_files)}")
+
+            try:
+                resume = yesno("\nResume previous session?", default="y")
+            except KeyboardInterrupt:
+                resume = False
+
+            if resume:
+                # Restore session state
+                reviewed_total = previous_session.reviewed_files.copy()
+                completed_total = previous_session.completed_files.copy()
+                skipped_total = previous_session.skipped_files.copy()
+                session_start_time = session_date
+                ok("Session resumed.")
+            else:
+                # Start fresh session - delete old session file
+                delete_session(scan_dir)
+                ok("Starting fresh session.")
 
         # Overview immediately after selecting scan
         show_scan_summary(scan_dir)
@@ -1960,6 +2329,7 @@ def main(args: types.SimpleNamespace) -> None:
                     reviewed_total,
                     completed_total,
                     is_msf_mode=True,  # Show severity labels for each file
+                    workflow_mapper=workflow_mapper,
                 )
                 
             # === Single severity selected (normal or MSF only) ===
@@ -1987,6 +2357,7 @@ def main(args: types.SimpleNamespace) -> None:
                     reviewed_total,
                     completed_total,
                     is_msf_mode=False,
+                    workflow_mapper=workflow_mapper,
                 )
                 
             # === Metasploit Module only ===
@@ -2014,24 +2385,30 @@ def main(args: types.SimpleNamespace) -> None:
                     reviewed_total,
                     completed_total,
                     is_msf_mode=True,
+                    workflow_mapper=workflow_mapper,
                 )
 
-    # Session summary
-    header("Session Summary")
-    info(f"Reviewed (not renamed): {len(reviewed_total)}")
-    if reviewed_total:
-        for name in reviewed_total:
-            print(f" - {name}")
+    # Save session before showing summary
+    if reviewed_total or completed_total or skipped_total:
+        save_session(
+            scan_dir,
+            session_start_time,
+            reviewed_total,
+            completed_total,
+            skipped_total,
+        )
 
-    info(f"Marked complete: {len(completed_total)}")
-    if completed_total:
-        for name in completed_total:
-            print(f" - {name}")
+    # Session summary with rich statistics
+    show_session_statistics(
+        session_start_time,
+        reviewed_total,
+        completed_total,
+        skipped_total,
+        scan_dir,
+    )
 
-    info(f"Skipped (empty): {len(skipped_total)}")
-    if skipped_total:
-        for name in skipped_total:
-            print(f" - {name}")
+    # Clean up session file after successful completion
+    delete_session(scan_dir)
 
     ok("Done.")
 
@@ -2126,6 +2503,36 @@ def summary(
     show_scan_summary(scan_dir, top_ports_n=top_ports)
 
 
+def show_nessus_tool_suggestions(out_dir: Path) -> None:
+    """
+    Display suggested tool commands after wizard export completes.
+
+    Args:
+        out_dir: Export directory containing scan artifacts
+    """
+    header("Suggested Tool Commands")
+    info("\nYou can use these commands to work with the exported data:\n")
+
+    # eyewitness command
+    info(fmt_action("1. eyewitness (web screenshot tool):"))
+    eyewitness_cmd = f"eyewitness -f {out_dir}/hosts.txt --web --no-prompt"
+    info(f"   {eyewitness_cmd}\n")
+
+    # gowitness command
+    info(fmt_action("2. gowitness (web screenshot tool):"))
+    gowitness_cmd = f"gowitness file -f {out_dir}/hosts.txt"
+    info(f"   {gowitness_cmd}\n")
+
+    # msfconsole db_import command
+    info(fmt_action("3. msfconsole (Metasploit import):"))
+    # Find the .nessus file (user should specify)
+    info("   Start msfconsole, then:")
+    msfconsole_cmd = "   db_import /path/to/your/scan.nessus"
+    info(f"{msfconsole_cmd}\n")
+
+    info("Tip: Copy these commands to run them in your terminal.")
+
+
 @app.command(
     help="Wizard: seed exported plugin files from a .nessus scan using NessusPluginHosts."
 )
@@ -2179,6 +2586,10 @@ def wizard(
     ok(f"Export complete. Files written under: {out_dir.resolve()}")
     info("Next step:")
     info(f"  python mundane.py review --export-root {out_dir}")
+
+    # Show suggested tool commands
+    print()  # Blank line for spacing
+    show_nessus_tool_suggestions(out_dir)
 
     if review:
         args = types.SimpleNamespace(export_root=str(out_dir), no_tools=False)

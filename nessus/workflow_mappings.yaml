@@ -1,0 +1,138 @@
+# Mundane Workflow Mappings
+#
+# Maps Nessus plugin IDs to verification workflow steps.
+# These workflows are display-only and provide structured guidance
+# for verifying specific vulnerabilities.
+
+version: "1.0"
+
+workflows:
+  # SMB Signing Not Required (Plugin 57608)
+  - plugin_id: "57608"
+    plugin_name: "SMB Signing Not Required"
+    severity: "medium"
+    description: "Remote SMB server does not enforce message signing"
+    steps:
+      - title: "Verify SMB signing is disabled"
+        commands:
+          - "netexec smb <target> -u <username> -p <password>"
+          - "nmap -p445 --script smb-security-mode <target>"
+        notes: "Check output for 'Message signing: disabled' or similar"
+
+      - title: "Test NTLM relay attack feasibility"
+        commands:
+          - "responder -I <interface> -A"
+          - "ntlmrelayx.py -tf targets.txt -smb2support"
+        notes: "Attempt to relay captured NTLM authentication"
+
+      - title: "Enumerate accessible shares"
+        commands:
+          - "netexec smb <target> -u <username> -p <password> --shares"
+          - "smbclient -L //<target> -U <username>"
+        notes: "List available SMB shares and permissions"
+
+    references:
+      - "https://www.tenable.com/plugins/nessus/57608"
+      - "https://attack.mitre.org/techniques/T1557/001/"
+
+  # Anonymous FTP Login (Plugin 10079)
+  - plugin_id: "10079"
+    plugin_name: "Anonymous FTP Login"
+    severity: "low"
+    description: "FTP server allows anonymous login"
+    steps:
+      - title: "Connect anonymously"
+        commands:
+          - "ftp <target>"
+          - "# Username: anonymous"
+          - "# Password: <any email address>"
+        notes: "Verify anonymous access is granted"
+
+      - title: "Enumerate directory structure"
+        commands:
+          - "ls -laR"
+          - "cd /"
+        notes: "Map available files and directories"
+
+      - title: "Test write permissions"
+        commands:
+          - "put testfile.txt"
+          - "ls -la"
+        notes: "Check if writable directories exist"
+
+    references:
+      - "https://www.tenable.com/plugins/nessus/10079"
+
+  # SSL Certificate Signed Using Weak Hashing Algorithm (Plugin 35291)
+  - plugin_id: "35291"
+    plugin_name: "SSL Certificate Signed Using Weak Hashing Algorithm"
+    severity: "low"
+    description: "SSL certificate uses weak signature algorithm (MD5/SHA1)"
+    steps:
+      - title: "Examine certificate details"
+        commands:
+          - "openssl s_client -connect <target>:443 -showcerts"
+          - "nmap -p443 --script ssl-cert <target>"
+        notes: "Look for 'Signature Algorithm' field (md5WithRSAEncryption, sha1WithRSAEncryption)"
+
+      - title: "Verify certificate chain"
+        commands:
+          - "openssl s_client -connect <target>:443 -showcerts | openssl x509 -noout -text"
+        notes: "Check if intermediate/root CAs also use weak algorithms"
+
+    references:
+      - "https://www.tenable.com/plugins/nessus/35291"
+      - "https://datatracker.ietf.org/doc/html/rfc6194"
+
+  # Default HTTP Login (Plugin 34850)
+  - plugin_id: "34850"
+    plugin_name: "HTTP Default Account"
+    severity: "high"
+    description: "Web application uses default credentials"
+    steps:
+      - title: "Identify web service and default credentials"
+        commands:
+          - "whatweb <target>"
+          - "nmap -p80,443,8080 --script http-default-accounts <target>"
+        notes: "Research common default credentials for identified service"
+
+      - title: "Test default credentials"
+        commands:
+          - "curl -u admin:admin http://<target>/admin"
+          - "hydra -C /usr/share/seclists/Passwords/Default-Credentials/http-betterdefaultpasslist.txt <target> http-get /"
+        notes: "Attempt login with documented default credentials"
+
+      - title: "Verify authenticated access"
+        commands:
+          - "# Browse to authenticated area"
+          - "# Check for admin/privileged functionality"
+        notes: "Confirm that authenticated session grants elevated access"
+
+    references:
+      - "https://www.tenable.com/plugins/nessus/34850"
+
+  # TLS/SSL Version 1.0 Protocol Detection (Plugin 104743)
+  - plugin_id: "104743"
+    plugin_name: "TLS/SSL Version 1.0 Protocol Detection"
+    severity: "medium"
+    description: "Remote service supports TLSv1.0"
+    steps:
+      - title: "Enumerate supported TLS versions"
+        commands:
+          - "nmap -p443 --script ssl-enum-ciphers <target>"
+          - "testssl.sh --protocols <target>:443"
+        notes: "Confirm TLSv1.0 is enabled"
+
+      - title: "Test for BEAST vulnerability"
+        commands:
+          - "testssl.sh --beast <target>:443"
+        notes: "Check if vulnerable to BEAST attack (CVE-2011-3389)"
+
+      - title: "Verify cipher suites"
+        commands:
+          - "openssl s_client -tls1 -cipher ALL -connect <target>:443"
+        notes: "List TLSv1.0 cipher suites accepted by server"
+
+    references:
+      - "https://www.tenable.com/plugins/nessus/104743"
+      - "https://www.us-cert.gov/ncas/alerts/TA14-290A"

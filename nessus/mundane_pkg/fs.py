@@ -129,6 +129,31 @@ def rename_review_complete(path: Path) -> Path:
         return path
 
 
+def undo_review_complete(path: Path) -> Path:
+    """Remove review complete prefix from filename.
+
+    Args:
+        path: Path to the file to undo
+
+    Returns:
+        Path to the renamed file, or original path if rename failed
+    """
+    name = path.name
+    prefix = REVIEW_PREFIX
+    if not is_review_complete(path):
+        warn("File is not marked as review complete.")
+        return path
+    new_name = name[len(prefix):]
+    new = path.with_name(new_name)
+    try:
+        path.rename(new)
+        ok(f"Removed review complete marker: {new.name}")
+        return new
+    except Exception as e:
+        err(f"Failed to rename: {e}")
+        return path
+
+
 def build_results_paths(
     scan_dir: Path, sev_dir: Path, plugin_filename: str
 ) -> tuple[Path, Path]:

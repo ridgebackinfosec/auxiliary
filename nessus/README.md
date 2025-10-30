@@ -11,7 +11,7 @@ A modernized **TUI helper** to review Nessus plugin host files quickly and kick 
   ```bash
   pip install -r requirements.txt
   ```
-  Uses: `rich`, `typer`, `pyperclip`, `colorama`, `loguru`, `requests`, `beautifulsoup4`
+  Uses: `rich`, `typer`, `pyperclip`, `colorama`, `loguru`, `requests`, `beautifulsoup4`, `pyyaml`
 - Optional external tools (only when you run them):
   - `git` – used by the wizard to clone **NessusPluginHosts**
   - `nmap`
@@ -85,9 +85,35 @@ python mundane.py review --export-root ./nessus_plugin_hosts
   - Choose between separated-by-file or combined list display
 - **Metasploit module search** - Search for relevant Metasploit modules by CVE or description:
   - Automatically extracts CVEs and exploit descriptions from plugin pages
-  - Generates `msfconsole` search commands for both CVEs and descriptions
+  - Generates `msfconsole` search commands (simplified - single command per term)
   - Execute searches directly with progress spinner and confirmation prompts
   - Return to command list after execution to run multiple searches
+- **Workflow mappings** - Plugin-specific verification workflows:
+  - YAML-based configuration mapping plugin IDs to verification steps
+  - Display-only workflows with commands, notes, and references
+  - Press `[W]` when viewing a file to see its verification workflow (if available)
+  - Ships with example workflows for common vulnerabilities (SMB signing, anonymous FTP, weak SSL, etc.)
+  - Customize via `workflow_mappings.yaml` or use `--workflow-mappings` CLI option
+- **Session persistence** - Resume interrupted review sessions:
+  - Auto-saves session state to `.mundane_session.json` in scan directory
+  - Resume prompt on startup with session details (reviewed/completed/skipped counts)
+  - Tracks session start time for accurate duration statistics
+  - Auto-cleanup after successful completion
+- **Review complete workflow** - Enhanced review-complete prompt:
+  - Interactive loop with actions: `[V]` View, `[E]` CVE info, `[C]` Copy, `[W]` Workflow (if available)
+  - Restates file summary before each prompt
+  - Press `[Enter]` to proceed to mark complete
+- **Reversible review-complete** - Undo accidentally marked files:
+  - Press `[U]` in reviewed files menu to undo review-complete prefix
+  - Multi-select support: individual files (1,3,5) or `[A]ll`
+- **Session end statistics** - Rich statistics display:
+  - Session duration with hours/minutes/seconds
+  - Per-severity breakdown for completed files
+  - Detailed file lists (reviewed, completed, skipped)
+- **Wizard post-export suggestions** - Suggested commands after wizard completes:
+  - eyewitness (web screenshot tool)
+  - gowitness (web screenshot tool)
+  - msfconsole db_import
 - **Run tools** against hosts:
   - `nmap` (profiles and UDP handling supported)
   - `netexec` / `nxc`

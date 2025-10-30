@@ -893,23 +893,21 @@ def _find_search_terms_from_html(html: str) -> dict[str, list[str]]:
 
 def _build_msfconsole_commands(term: str) -> list[str]:
     """
-    Build msfconsole one-liner commands for a search term.
-    
+    Build msfconsole one-liner command for a search term.
+
     Args:
         term: Metasploit module search term
-        
+
     Returns:
-        List of msfconsole command strings
+        List containing single msfconsole command string
     """
     # Use appropriate quoting based on term content
     if "'" in term:
-        cmd1 = f'msfconsole -q -x "search {term}; exit"'
-        cmd2 = f'msfconsole -q -x "search type:exploit {term}; exit"'
+        cmd = f'msfconsole -q -x "search {term}; exit"'
     else:
-        cmd1 = f"msfconsole -q -x 'search {term}; exit'"
-        cmd2 = f"msfconsole -q -x 'search type:exploit {term}; exit'"
-    
-    return [cmd1, cmd2]
+        cmd = f"msfconsole -q -x 'search {term}; exit'"
+
+    return [cmd]
 
 
 def show_msf_available(plugin_url: str) -> None:
@@ -1060,8 +1058,8 @@ def interactive_msf_search(plugin_url: str) -> None:
         # Display one-liners
         info("\nSuggested msfconsole one-liner(s):")
         for index, cmd in enumerate(one_liners, 1):
-            # Label commands by type
-            if index <= len(cves) * 2:
+            # Determine label based on position (CVEs come first)
+            if index <= len(cves):
                 label = "[CVE-based]"
             else:
                 label = "[Description-based]"
