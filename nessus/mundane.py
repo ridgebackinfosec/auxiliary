@@ -1359,9 +1359,6 @@ def process_single_file(
     if ports_str:
         info(f"Ports detected: {ports_str}")
 
-    # View file
-    handle_file_view(chosen, plugin_url=plugin_url, workflow_mapper=workflow_mapper)
-
     completion_decided = False
 
     if args.no_tools:
