@@ -25,20 +25,18 @@ class WorkflowStep:
 @dataclass
 class Workflow:
     """
-    Represents a complete verification workflow for a plugin.
+    Represents a complete verification workflow for plugin(s).
 
     Attributes:
-        plugin_id: Nessus plugin ID
-        plugin_name: Human-readable plugin name
-        severity: Expected severity level
+        plugin_id: Original plugin_id string from YAML (may be comma-separated)
+        workflow_name: Human-readable workflow name
         description: Brief description
         steps: List of workflow steps
         references: List of reference URLs
     """
 
     plugin_id: str
-    plugin_name: str
-    severity: str
+    workflow_name: str
     description: str
     steps: list[WorkflowStep]
     references: list[str]
@@ -95,14 +93,17 @@ class WorkflowMapper:
 
                 workflow = Workflow(
                     plugin_id=plugin_id,
-                    plugin_name=workflow_data.get("plugin_name", ""),
-                    severity=workflow_data.get("severity", ""),
+                    workflow_name=workflow_data.get("workflow_name", ""),
                     description=workflow_data.get("description", ""),
                     steps=steps,
                     references=workflow_data.get("references", []),
                 )
 
-                self.workflows[plugin_id] = workflow
+                # Split by comma and register workflow for each ID
+                plugin_ids = [id.strip() for id in plugin_id.split(",")]
+                for pid in plugin_ids:
+                    if pid:  # Skip empty strings
+                        self.workflows[pid] = workflow
 
         except Exception:
             # Failed to load workflows - mapper will be empty

@@ -3,14 +3,20 @@
 # Maps Nessus plugin IDs to verification workflow steps.
 # These workflows are display-only and provide structured guidance
 # for verifying specific vulnerabilities.
+#
+# Format:
+#   plugin_id: Single ID ("57608") or comma-separated ("57608,10079,12345")
+#   workflow_name: Human-readable name for the workflow
+#   description: Brief description of what is being verified
+#   steps: List of verification steps with commands and notes
+#   references: List of reference URLs
 
 version: "1.0"
 
 workflows:
   # SMB Signing Not Required (Plugin 57608)
   - plugin_id: "57608"
-    plugin_name: "SMB Signing Not Required"
-    severity: "medium"
+    workflow_name: "SMB Signing Not Required"
     description: "Remote SMB server does not enforce message signing"
     steps:
       - title: "Verify SMB signing is disabled"
@@ -37,8 +43,7 @@ workflows:
 
   # Anonymous FTP Login (Plugin 10079)
   - plugin_id: "10079"
-    plugin_name: "Anonymous FTP Login"
-    severity: "low"
+    workflow_name: "Anonymous FTP Login"
     description: "FTP server allows anonymous login"
     steps:
       - title: "Connect anonymously"
@@ -65,8 +70,7 @@ workflows:
 
   # SSL Certificate Signed Using Weak Hashing Algorithm (Plugin 35291)
   - plugin_id: "35291"
-    plugin_name: "SSL Certificate Signed Using Weak Hashing Algorithm"
-    severity: "low"
+    workflow_name: "SSL Certificate Signed Using Weak Hashing Algorithm"
     description: "SSL certificate uses weak signature algorithm (MD5/SHA1)"
     steps:
       - title: "Examine certificate details"
@@ -86,8 +90,7 @@ workflows:
 
   # Default HTTP Login (Plugin 34850)
   - plugin_id: "34850"
-    plugin_name: "HTTP Default Account"
-    severity: "high"
+    workflow_name: "HTTP Default Account"
     description: "Web application uses default credentials"
     steps:
       - title: "Identify web service and default credentials"
@@ -113,8 +116,7 @@ workflows:
 
   # TLS/SSL Version 1.0 Protocol Detection (Plugin 104743)
   - plugin_id: "104743"
-    plugin_name: "TLS/SSL Version 1.0 Protocol Detection"
-    severity: "medium"
+    workflow_name: "TLS/SSL Version 1.0 Protocol Detection"
     description: "Remote service supports TLSv1.0"
     steps:
       - title: "Enumerate supported TLS versions"

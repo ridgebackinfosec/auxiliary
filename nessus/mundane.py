@@ -781,7 +781,7 @@ def handle_file_view(chosen: Path, plugin_url: Optional[str] = None, workflow_ma
 
 def display_workflow(workflow: Workflow) -> None:
     """
-    Display a verification workflow for a plugin.
+    Display a verification workflow for plugin(s).
 
     Args:
         workflow: Workflow object to display
@@ -792,9 +792,8 @@ def display_workflow(workflow: Workflow) -> None:
     console = Console()
 
     # Header
-    header(f"Verification Workflow: {workflow.plugin_name}")
-    info(f"Plugin ID: {workflow.plugin_id}")
-    info(f"Severity: {colorize_severity_label(workflow.severity.capitalize())}")
+    header(f"Verification Workflow: {workflow.workflow_name}")
+    info(f"Plugin ID(s): {workflow.plugin_id}")
     info(f"Description: {workflow.description}")
     print()
 
