@@ -824,131 +824,6 @@ def display_workflow(workflow: Workflow) -> None:
         pass
 
 
-def review_complete_workflow(
-    chosen: Path,
-    sev_dir: Path,
-    hosts: list[str],
-    ports_str: str,
-    plugin_url: Optional[str],
-    completed_total: list[str],
-    reviewed_total: list[str],
-    show_severity: bool,
-    workflow_mapper: Optional[WorkflowMapper] = None,
-) -> bool:
-    """
-    Interactive workflow for review-complete prompt with context loop.
-
-    Loops until user presses [Enter] to proceed. Offers actions:
-    - [V] View file again
-    - [E] CVE info
-    - [C] Copy to clipboard
-    - [W] Workflow (if available)
-    - [Enter] Proceed to review-complete prompt
-
-    Args:
-        chosen: Plugin file being reviewed
-        sev_dir: Severity directory
-        hosts: Parsed host list
-        ports_str: Detected ports string
-        plugin_url: Optional Tenable plugin URL
-        completed_total: List to track completed files
-        reviewed_total: List to track reviewed files
-        show_severity: Whether to show severity label
-        workflow_mapper: Optional workflow mapper for plugin workflows
-
-    Returns:
-        True if completion decision was made, False otherwise
-    """
-    while True:
-        # Restate file summary
-        header("Review Summary")
-        if show_severity:
-            info(f"File: {chosen.name}  — {pretty_severity_label(sev_dir.name)}")
-        else:
-            info(f"File: {chosen.name}")
-
-        pd_line = _plugin_details_line(chosen)
-        if pd_line:
-            info(pd_line)
-
-        info(f"Hosts: {len(hosts)}")
-        if hosts:
-            info(f"Example: {hosts[0]}")
-        if ports_str:
-            info(f"Ports: {ports_str}")
-
-        # Check if workflow is available
-        has_workflow = False
-        if workflow_mapper:
-            plugin_id = _plugin_id_from_filename(chosen)
-            has_workflow = plugin_id and workflow_mapper.has_workflow(plugin_id)
-
-        # Offer actions
-        workflow_option = "  [W] Workflow" if has_workflow else ""
-        print(fmt_action(f"\n[V] View  [E] CVE info  [C] Copy{workflow_option}  [Enter] Continue to mark complete"))
-
-        try:
-            action = input("Action: ").strip().lower()
-        except KeyboardInterrupt:
-            return False
-
-        if action in ("", "enter", "continue"):
-            # User wants to proceed to review-complete prompt
-            break
-        elif action in ("v", "view"):
-            handle_file_view(chosen, plugin_url=plugin_url, workflow_mapper=workflow_mapper)
-        elif action in ("w", "workflow"):
-            if not has_workflow:
-                warn("No workflow available for this plugin.")
-            else:
-                plugin_id = _plugin_id_from_filename(chosen)
-                workflow = workflow_mapper.get_workflow(plugin_id)
-                if workflow:
-                    display_workflow(workflow)
-        elif action in ("e", "cve"):
-            if not plugin_url:
-                warn("No plugin URL available for CVE extraction.")
-            else:
-                from mundane_pkg.tools import _fetch_html, _extract_cves_from_html
-
-                try:
-                    header("CVE Information")
-                    info("Fetching plugin page...")
-                    html = _fetch_html(plugin_url)
-                    cves = _extract_cves_from_html(html)
-
-                    if cves:
-                        info(f"Found {len(cves)} CVE(s):")
-                        for cve in cves:
-                            info(f"{cve}")
-                    else:
-                        warn("No CVEs found on plugin page.")
-                except Exception as exc:
-                    warn(f"Failed to fetch CVE information: {exc}")
-        elif action in ("c", "copy"):
-            # Copy in grouped format by default
-            payload = _grouped_payload_text(chosen)
-            ok_flag, detail = copy_to_clipboard(payload)
-            if ok_flag:
-                ok("Copied to clipboard.")
-            else:
-                warn(f"{detail} Printing below for manual copy:")
-                print(payload)
-        else:
-            warn("Invalid action. Use V/E/C or press Enter.")
-
-    # After loop, ask for review-complete
-    try:
-        if yesno("\nMark this file as REVIEW_COMPLETE?", default="n"):
-            newp = rename_review_complete(chosen)
-            completed_total.append(newp.name if newp != chosen else chosen.name)
-        else:
-            reviewed_total.append(chosen.name)
-        return True
-    except KeyboardInterrupt:
-        return False
-
-
 # === Tool execution workflows ===
 
 
@@ -1366,9 +1241,15 @@ def process_single_file(
 
     if args.no_tools:
         info("(no-tools mode active — skipping tool selection)")
-        completion_decided = review_complete_workflow(
-            chosen, sev_dir, hosts, ports_str, plugin_url, completed_total, reviewed_total, show_severity, workflow_mapper
-        )
+        try:
+            if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
+                newp = rename_review_complete(chosen)
+                completed_total.append(newp.name if newp != chosen else chosen.name)
+            else:
+                reviewed_total.append(chosen.name)
+            completion_decided = True
+        except KeyboardInterrupt:
+            pass
         return
 
     try:
@@ -1377,9 +1258,15 @@ def process_single_file(
         return
 
     if not do_scan:
-        completion_decided = review_complete_workflow(
-            chosen, sev_dir, hosts, ports_str, plugin_url, completed_total, reviewed_total, show_severity, workflow_mapper
-        )
+        try:
+            if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
+                newp = rename_review_complete(chosen)
+                completed_total.append(newp.name if newp != chosen else chosen.name)
+            else:
+                reviewed_total.append(chosen.name)
+            completion_decided = True
+        except KeyboardInterrupt:
+            pass
         return
 
     # Run tool workflow
@@ -1388,9 +1275,14 @@ def process_single_file(
     )
 
     if not completion_decided:
-        review_complete_workflow(
-            chosen, sev_dir, hosts, ports_str, plugin_url, completed_total, reviewed_total, show_severity, workflow_mapper
-        )
+        try:
+            if yesno("Mark this file as REVIEW_COMPLETE?", default="n"):
+                newp = rename_review_complete(chosen)
+                completed_total.append(newp.name if newp != chosen else chosen.name)
+            else:
+                reviewed_total.append(chosen.name)
+        except KeyboardInterrupt:
+            pass
 
 
 # === File list action handler ===
