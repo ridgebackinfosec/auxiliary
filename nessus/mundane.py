@@ -2012,9 +2012,31 @@ def main(args: types.SimpleNamespace) -> None:
     session_start_time = datetime.now()
 
     # Initialize workflow mapper
-    workflow_mapper = WorkflowMapper()
-    if workflow_mapper.count() > 0:
-        info(f"Loaded {workflow_mapper.count()} workflow mapping(s) from workflow_mappings.yaml")
+    custom_workflows = getattr(args, 'custom_workflows', None)
+    custom_workflows_only = getattr(args, 'custom_workflows_only', None)
+
+    if custom_workflows_only:
+        # Replace mode: Use ONLY custom YAML
+        workflow_mapper = WorkflowMapper(yaml_path=custom_workflows_only)
+        if workflow_mapper.count() > 0:
+            info(f"Loaded {workflow_mapper.count()} custom workflow(s) from {custom_workflows_only} (defaults disabled)")
+        else:
+            warn(f"No workflows loaded from {custom_workflows_only}")
+    else:
+        # Default or supplement mode
+        workflow_mapper = WorkflowMapper()  # Load defaults
+        default_count = workflow_mapper.count()
+
+        if custom_workflows:
+            # Supplement mode: Load custom YAML in addition to defaults
+            additional_count = workflow_mapper.load_additional_workflows(custom_workflows)
+            if additional_count > 0:
+                info(f"Loaded {default_count} default + {additional_count} custom workflow(s) from {custom_workflows}")
+            else:
+                warn(f"No additional workflows loaded from {custom_workflows}")
+            info(f"Total: {workflow_mapper.count()} workflow(s) available")
+        elif default_count > 0:
+            info(f"Loaded {default_count} default workflow(s)")
 
     use_sudo = root_or_sudo_available()
     if not use_sudo:
@@ -2331,9 +2353,30 @@ def review(
     no_tools: bool = typer.Option(
         False, "--no-tools", help="Disable tool prompts (review-only)."
     ),
+    custom_workflows: Optional[Path] = typer.Option(
+        None,
+        "--custom-workflows",
+        "-w",
+        help="Custom workflow YAML to supplement defaults (custom overrides on conflict).",
+    ),
+    custom_workflows_only: Optional[Path] = typer.Option(
+        None,
+        "--custom-workflows-only",
+        help="Use ONLY this workflow YAML (ignores default workflows).",
+    ),
 ) -> None:
     """Run interactive review mode."""
-    args = types.SimpleNamespace(export_root=str(export_root), no_tools=no_tools)
+    # Validate: can't use both flags
+    if custom_workflows and custom_workflows_only:
+        err("Cannot use both --custom-workflows and --custom-workflows-only")
+        raise typer.Exit(1)
+
+    args = types.SimpleNamespace(
+        export_root=str(export_root),
+        no_tools=no_tools,
+        custom_workflows=custom_workflows,
+        custom_workflows_only=custom_workflows_only,
+    )
     try:
         main(args)
     except KeyboardInterrupt:

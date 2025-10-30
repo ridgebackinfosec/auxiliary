@@ -150,3 +150,63 @@ class WorkflowMapper:
             Number of workflows
         """
         return len(self.workflows)
+
+    def load_additional_workflows(self, yaml_path: Path) -> int:
+        """
+        Load workflows from an additional YAML file and merge with existing.
+
+        If a plugin_id already exists, the new workflow overrides it.
+
+        Args:
+            yaml_path: Path to additional workflow YAML file
+
+        Returns:
+            Number of workflow definitions loaded from the additional file
+        """
+        if not yaml_path.exists():
+            return 0
+
+        workflows_loaded = 0
+
+        try:
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+
+            if not data or "workflows" not in data:
+                return 0
+
+            for workflow_data in data["workflows"]:
+                plugin_id = str(workflow_data.get("plugin_id", ""))
+                if not plugin_id:
+                    continue
+
+                steps = []
+                for step_data in workflow_data.get("steps", []):
+                    step = WorkflowStep(
+                        title=step_data.get("title", ""),
+                        commands=step_data.get("commands", []),
+                        notes=step_data.get("notes", ""),
+                    )
+                    steps.append(step)
+
+                workflow = Workflow(
+                    plugin_id=plugin_id,
+                    workflow_name=workflow_data.get("workflow_name", ""),
+                    description=workflow_data.get("description", ""),
+                    steps=steps,
+                    references=workflow_data.get("references", []),
+                )
+
+                # Split by comma and register workflow for each ID (overrides existing)
+                plugin_ids = [id.strip() for id in plugin_id.split(",")]
+                for pid in plugin_ids:
+                    if pid:
+                        self.workflows[pid] = workflow
+
+                # Count this workflow definition as loaded
+                workflows_loaded += 1
+
+        except Exception:
+            pass
+
+        return workflows_loaded

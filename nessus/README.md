@@ -93,7 +93,9 @@ python mundane.py review --export-root ./nessus_plugin_hosts
   - Display-only workflows with commands, notes, and references
   - Press `[W]` when viewing a file to see its verification workflow (if available)
   - Ships with example workflows for common vulnerabilities (SMB signing, anonymous FTP, weak SSL, etc.)
-  - Customize via `workflow_mappings.yaml` or use `--workflow-mappings` CLI option
+  - Support for multi-plugin workflows (comma-separated plugin IDs map to single workflow)
+  - Supplement defaults with `--custom-workflows` (custom overrides on conflict)
+  - Replace defaults entirely with `--custom-workflows-only`
 - **Session persistence** - Resume interrupted review sessions:
   - Auto-saves session state to `.mundane_session.json` in scan directory
   - Resume prompt on startup with session details (reviewed/completed/skipped counts)
@@ -130,7 +132,7 @@ python mundane.py review --export-root ./nessus_plugin_hosts
 python mundane.py wizard <scan.nessus> [--repo-dir DIR] [--out-dir DIR] [--review]
 
 # Interactive review (main workflow)
-python mundane.py review --export-root ./nessus_plugin_hosts [--no-tools]
+python mundane.py review --export-root ./nessus_plugin_hosts [--no-tools] [--custom-workflows PATH] [--custom-workflows-only PATH]
 
 # Summarize a scan directory
 python mundane.py summary ./nessus_plugin_hosts/<ScanName> [--top-ports 10]
@@ -140,6 +142,49 @@ python mundane.py compare 4_Critical/*.txt
 
 # Quick file preview
 python mundane.py view nessus_plugin_hosts/<Scan>/<Severity>/<Plugin>.txt [--grouped]
+```
+
+---
+
+## Custom workflow options
+
+The `review` command supports custom workflow YAML files to extend or replace the bundled workflows:
+
+### Supplement mode (merge with defaults)
+```bash
+python mundane.py review --export-root ./nessus_plugin_hosts --custom-workflows my_workflows.yaml
+# Short form:
+python mundane.py review --export-root ./nessus_plugin_hosts -w my_workflows.yaml
+```
+- Loads bundled workflows from `workflow_mappings.yaml`
+- Merges in custom workflows from specified file
+- **Custom workflows override defaults** if plugin IDs conflict
+- Useful for adding organization-specific workflows while keeping bundled ones
+
+### Replace mode (ignore defaults)
+```bash
+python mundane.py review --export-root ./nessus_plugin_hosts --custom-workflows-only my_workflows.yaml
+```
+- Loads **only** custom workflows from specified file
+- Ignores bundled `workflow_mappings.yaml` entirely
+- Useful for completely custom workflow sets
+
+**Note**: Cannot use both `--custom-workflows` and `--custom-workflows-only` together.
+
+### Custom workflow YAML format
+```yaml
+version: "1.0"
+workflows:
+  - plugin_id: "57608,12345"  # Single ID or comma-separated IDs
+    workflow_name: "SMB Signing Not Required"
+    description: "Remote SMB server does not enforce message signing"
+    steps:
+      - title: "Verify SMB signing is disabled"
+        commands:
+          - "netexec smb <target> -u <username> -p <password>"
+        notes: "Check output for 'Message signing: disabled'"
+    references:
+      - "https://www.tenable.com/plugins/nessus/57608"
 ```
 
 ---
