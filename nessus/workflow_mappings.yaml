@@ -26,6 +26,23 @@
 version: "1.0"
 
 workflows:
+  - plugin_id: "10759"
+    workflow_name: "Web Server HTTP Header Internal IP Disclosure"
+    description: "Occurs when a web server includes internal IP addresses in HTTP response headers, unintentionally exposing internal network details that can aid attackers in mapping or targeting internal infrastructure."
+    steps:
+      - title: "Try with NSE script"
+        commands:
+          - "sudo nmap --script http-internal-ip-disclosure --script-args http-internal-ip-disclosure.path=/ $IP -p $PORT"
+        notes: ""
+
+      - title: "Use Burp's Repeater"
+        commands:
+          - "Manually build and run a request using Burp's repeater"
+        notes: "Manually exploit this via Burps Repeater functionality and forced the use of HTTP/1.0 without a Host header defined."
+
+    references:
+      - "https://www.tenable.com/plugins/nessus/10759"
+
   # SMB Signing Not Required (Plugin 57608)
   - plugin_id: "57608"
     workflow_name: "SMB Signing Not Required"

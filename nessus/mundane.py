@@ -1804,7 +1804,8 @@ def browse_file_list(
             print(status)
 
             render_file_list_table(
-                page_items, sort_mode, get_counts_for, row_offset=start
+                page_items, sort_mode, get_counts_for, row_offset=start,
+                sev_map=sev_map if is_msf_mode else None
             )
 
             can_next = page_idx + 1 < total_pages

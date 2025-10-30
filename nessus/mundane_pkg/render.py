@@ -16,7 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from .ansi import fmt_action, info, warn
+from .ansi import colorize_severity_label, fmt_action, info, warn
 from .constants import SEVERITY_COLORS
 from .fs import default_page_size, list_files, pretty_severity_label
 from .logging_setup import log_timing
@@ -155,14 +155,16 @@ def render_file_list_table(
     sort_mode: str,
     get_counts_for: Any,
     row_offset: int = 0,
+    sev_map: Optional[dict[Path, Path]] = None,
 ) -> None:
-    """Render a paginated file list table with optional host counts.
+    """Render a paginated file list table with optional host counts and severity.
 
     Args:
         display: List of file paths to display on this page
         sort_mode: Current sort mode ("hosts" or "name")
         get_counts_for: Function to get (host_count, ports_str) for a file
         row_offset: Starting row number for pagination
+        sev_map: Optional mapping of file paths to severity directories
     """
     table = Table(
         title=None, box=box.SIMPLE, show_lines=False, pad_edge=False
@@ -171,14 +173,27 @@ def render_file_list_table(
     table.add_column("File")
     if sort_mode == "hosts":
         table.add_column("Hosts", justify="right", no_wrap=True)
+    if sev_map:
+        table.add_column("Severity", justify="left", no_wrap=True)
 
     for i, file_path in enumerate(display, 1):
         row_number = row_offset + i
+        row_data = [str(row_number), file_path.name]
+
         if sort_mode == "hosts":
             host_count, _ports_str = get_counts_for(file_path)
-            table.add_row(str(row_number), file_path.name, str(host_count))
-        else:
-            table.add_row(str(row_number), file_path.name)
+            row_data.append(str(host_count))
+
+        if sev_map and file_path in sev_map:
+            sev_dir = sev_map[file_path]
+            sev_label = pretty_severity_label(sev_dir.name)
+            sev_colored = colorize_severity_label(sev_label)
+            row_data.append(sev_colored)
+        elif sev_map:
+            # File in sev_map but not found - show unknown
+            row_data.append("Unknown")
+
+        table.add_row(*row_data)
 
     _console_global.print(table)
 
