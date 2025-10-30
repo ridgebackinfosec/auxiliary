@@ -2289,17 +2289,20 @@ def main(args: types.SimpleNamespace) -> None:
             skipped_total,
         )
 
-    # Session summary with rich statistics
-    show_session_statistics(
-        session_start_time,
-        reviewed_total,
-        completed_total,
-        skipped_total,
-        scan_dir,
-    )
+    # Session summary with rich statistics (only if work was done)
+    if reviewed_total or completed_total or skipped_total:
+        # Note: scan_dir is defined only if user entered a scan
+        # Since we have reviewed/completed/skipped files, scan_dir must be defined
+        show_session_statistics(
+            session_start_time,
+            reviewed_total,
+            completed_total,
+            skipped_total,
+            scan_dir,
+        )
 
-    # Clean up session file after successful completion
-    delete_session(scan_dir)
+        # Clean up session file after successful completion
+        delete_session(scan_dir)
 
     ok("Done.")
 
