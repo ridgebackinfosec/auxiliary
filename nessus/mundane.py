@@ -688,95 +688,98 @@ def handle_file_view(chosen: Path, plugin_url: Optional[str] = None, workflow_ma
         plugin_id = _plugin_id_from_filename(chosen)
         has_workflow = plugin_id and workflow_mapper.has_workflow(plugin_id)
 
-    # Step 1: Ask if user wants to view, copy, see CVE info, or see workflow
-    workflow_option = " / [W] Workflow" if has_workflow else ""
-    try:
-        action_choice = input(
-            f"\n[V] View file / [E] CVE info / [C] Copy to clipboard{workflow_option} / [Enter] Skip: "
-        ).strip().lower()
-    except KeyboardInterrupt:
-        # User cancelled - just return to continue file processing
-        return
-
-    if action_choice in ("", "n", "none", "skip"):
-        return
-
-    # Handle workflow option
-    if action_choice in ("w", "workflow"):
-        if not has_workflow:
-            warn("No workflow available for this plugin.")
-            return
-
-        plugin_id = _plugin_id_from_filename(chosen)
-        workflow = workflow_mapper.get_workflow(plugin_id)
-        if workflow:
-            display_workflow(workflow)
-        return
-
-    # Handle CVE info option
-    if action_choice in ("e", "cve"):
-        if not plugin_url:
-            warn("No plugin URL available for CVE extraction.")
-            return
-
-        from mundane_pkg.tools import _fetch_html, _extract_cves_from_html
-
-        # Fetch and extract CVEs
+    # Loop to allow multiple actions on the same file
+    while True:
+        # Step 1: Ask if user wants to view, copy, see CVE info, or see workflow
+        workflow_option = " / [W] Workflow" if has_workflow else ""
         try:
-            header("CVE Information")
-            info("Fetching plugin page...")
-            html = _fetch_html(plugin_url)
-            cves = _extract_cves_from_html(html)
+            action_choice = input(
+                f"\n[V] View file / [E] CVE info / [C] Copy to clipboard{workflow_option} / [Enter] Skip: "
+            ).strip().lower()
+        except KeyboardInterrupt:
+            # User cancelled - just return to continue file processing
+            return
 
-            if cves:
-                info(f"Found {len(cves)} CVE(s):")
-                for cve in cves:
-                    info(f"{cve}")
-            else:
-                warn("No CVEs found on plugin page.")
-        except Exception as exc:
-            warn(f"Failed to fetch CVE information: {exc}")
+        if action_choice in ("", "n", "none", "skip"):
+            # User pressed Enter - break loop and proceed to tool prompt
+            break
 
-        return
+        # Handle workflow option
+        if action_choice in ("w", "workflow"):
+            if not has_workflow:
+                warn("No workflow available for this plugin.")
+                continue
 
-    # Step 2: Ask for format (applies to both view and copy)
-    format_prompt = "Format: [R]aw / [G]rouped (host:port) / [H]osts only (default=G): "
-    try:
-        format_choice = input(format_prompt).strip().lower()
-    except KeyboardInterrupt:
-        return
+            plugin_id = _plugin_id_from_filename(chosen)
+            workflow = workflow_mapper.get_workflow(plugin_id)
+            if workflow:
+                display_workflow(workflow)
+            continue
 
-    # Default to grouped
-    if format_choice in ("", "g", "grouped"):
-        if action_choice in ("v", "view"):
-            text = _grouped_paged_text(chosen)
-            menu_pager(text)
-        elif action_choice in ("c", "copy"):
-            payload = _grouped_payload_text(chosen)
-    elif format_choice in ("h", "hosts", "hosts-only"):
-        if action_choice in ("v", "view"):
-            text = _hosts_only_paged_text(chosen)
-            menu_pager(text)
-        elif action_choice in ("c", "copy"):
-            payload = _hosts_only_payload_text(chosen)
-    elif format_choice in ("r", "raw"):
-        if action_choice in ("v", "view"):
-            text = _file_raw_paged_text(chosen)
-            menu_pager(text)
-        elif action_choice in ("c", "copy"):
-            payload = _file_raw_payload_text(chosen)
-    else:
-        warn("Invalid format choice.")
-        return
+        # Handle CVE info option
+        if action_choice in ("e", "cve"):
+            if not plugin_url:
+                warn("No plugin URL available for CVE extraction.")
+                continue
 
-    # Step 3: If copying, execute the clipboard operation
-    if action_choice in ("c", "copy"):
-        ok_flag, detail = copy_to_clipboard(payload)
-        if ok_flag:
-            ok("Copied to clipboard.")
+            from mundane_pkg.tools import _fetch_html, _extract_cves_from_html
+
+            # Fetch and extract CVEs
+            try:
+                header("CVE Information")
+                info("Fetching plugin page...")
+                html = _fetch_html(plugin_url)
+                cves = _extract_cves_from_html(html)
+
+                if cves:
+                    info(f"Found {len(cves)} CVE(s):")
+                    for cve in cves:
+                        info(f"{cve}")
+                else:
+                    warn("No CVEs found on plugin page.")
+            except Exception as exc:
+                warn(f"Failed to fetch CVE information: {exc}")
+
+            continue
+
+        # Step 2: Ask for format (applies to both view and copy)
+        format_prompt = "Format: [R]aw / [G]rouped (host:port) / [H]osts only (default=G): "
+        try:
+            format_choice = input(format_prompt).strip().lower()
+        except KeyboardInterrupt:
+            return
+
+        # Default to grouped
+        if format_choice in ("", "g", "grouped"):
+            if action_choice in ("v", "view"):
+                text = _grouped_paged_text(chosen)
+                menu_pager(text)
+            elif action_choice in ("c", "copy"):
+                payload = _grouped_payload_text(chosen)
+        elif format_choice in ("h", "hosts", "hosts-only"):
+            if action_choice in ("v", "view"):
+                text = _hosts_only_paged_text(chosen)
+                menu_pager(text)
+            elif action_choice in ("c", "copy"):
+                payload = _hosts_only_payload_text(chosen)
+        elif format_choice in ("r", "raw"):
+            if action_choice in ("v", "view"):
+                text = _file_raw_paged_text(chosen)
+                menu_pager(text)
+            elif action_choice in ("c", "copy"):
+                payload = _file_raw_payload_text(chosen)
         else:
-            warn(f"{detail} Printing below for manual copy:")
-            print(payload)
+            warn("Invalid format choice.")
+            continue
+
+        # Step 3: If copying, execute the clipboard operation
+        if action_choice in ("c", "copy"):
+            ok_flag, detail = copy_to_clipboard(payload)
+            if ok_flag:
+                ok("Copied to clipboard.")
+            else:
+                warn(f"{detail} Printing below for manual copy:")
+                print(payload)
 
 
 def display_workflow(workflow: Workflow) -> None:
