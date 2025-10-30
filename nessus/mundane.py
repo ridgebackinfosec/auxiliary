@@ -2348,7 +2348,7 @@ def _root() -> None:
     return
 
 
-@app.command(help="Interactive review (calls the existing flow).")
+@app.command(help="Interactive review of findings.")
 def review(
     export_root: Path = typer.Option(
         Path("./nessus_plugin_hosts"), "--export-root", "-r", help="Scan exports root."
