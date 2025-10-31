@@ -1,6 +1,6 @@
 # Ridgeback InfoSec — auxiliary scripts/tools
 
-Collection of small Python3 utilities used for reconnaissance, list processing, and local tooling. **Most tools are stdlib-only** (no pip packages). **Exception:** [`nessus/mundane.py`](#nessus) uses a few Python dependencies and optional external binaries.
+Collection of small Python3 utilities used for reconnaissance, list processing, and local tooling. **All tools are stdlib-only** (no pip packages required).
 
 Tested with Python 3.8+. Use `python3` (or `python`) to run.
 
@@ -113,61 +113,18 @@ Small file utilities for splitting and credential processing.
 
 ---
 
-### `nessus/`  
-Nessus / vulnerability review tooling.
+### Mundane (Nessus Review Tool) — MIGRATED
 
-- `nessus/mundane.py` — Nessus plugin-host review and verification helper with Rich/Typer UI.
+The **Mundane** Nessus plugin-host review and verification tool has been moved to its own dedicated repository:
 
-  **Requirements (for this script only)**  
-  - Python deps (see repo `requirements.txt`):
-    - `rich`, `typer`, `pyperclip`, `colorama`
-  - Optional external tools (only if you choose to run them from within the app):
-    - `git` (needed by the wizard)
-    - `nmap`
-    - `nxc` or `netexec`
-  - On Linux, clipboard copy may require one of: `xclip`, `wl-copy`, or `xsel`.
+**→ https://github.com/ridgebackinfosec/mundane**
 
-  **Install deps**
-  ```bash
-  pip install -r requirements.txt
-  ```
-
-  **Quick start**
-  ```bash
-  # 1) Seed exports from a .nessus (clones DefensiveOrigins/NessusPluginHosts and writes ./nessus_plugin_hosts)
-  python nessus/mundane.py wizard path/to/scan.nessus
-  # or immediately start reviewing after export:
-  python nessus/mundane.py wizard path/to/scan.nessus --review
-
-  # 2) Review exports interactively (if you already have nessus_plugin_hosts)
-  python nessus/mundane.py review --export-root ./nessus_plugin_hosts
-  ```
-
-  **Other commands**
-  ```bash
-  # Summarize a scan directory
-  python nessus/mundane.py summary ./nessus_plugin_hosts/<ScanName> --top-ports 10
-
-  # Compare/group identical host:port combos across files
-  python nessus/mundane.py compare 4_Critical/*.txt
-
-  # Quick file preview
-  python nessus/mundane.py view nessus_plugin_hosts/<Scan>/<Severity>/<Plugin>.txt --grouped
-  ```
-
-  **Highlights**
-  - Wizard: clone & export from `.nessus` in one step, optional `--review`.
-  - Clean tables for scans/severities/files; paged views; colorized labels.
-  - Preview includes **Plugin Details** link (`https://www.tenable.com/plugins/nessus/<ID>`).
-  - Grouped `host:port,port,...` view; copy-to-clipboard in file view and command review.
-  - Compare & group identical host:port combos across filtered files.
-  - Progress indicators: cloning, exporting, parsing, grouping, bulk-marking, and tool runs.
-  - Optional tool runs: `nmap` (NSE profiles, UDP auto-switch for SNMP/IPMI), `netexec` protocols, or custom commands with placeholders.
+For Nessus vulnerability review workflows, please use the standalone Mundane repository.
 
 ---
 
 ## Notes & recommendations
 
-- Most tools are standard-Python only (stdlib). The `nessus/mundane.py` script is the notable exception and requires the packages listed above.
+- All tools use Python standard library only (stdlib). No external dependencies required.
 - Firewall tools will require root (`sudo`) when using `--apply` or saving persistent iptables rules.
 - Examples are intentionally explicit so you can copy/paste; tweak paths/options per your workflow.

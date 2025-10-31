@@ -31,9 +31,7 @@ MANIFEST
 .DS_Store
 
 # Project specific
-nessus/scan_artifacts/
 *.log
-.mundane_session.json
 
 # Testing
 .pytest_cache/
