@@ -14,6 +14,7 @@ from .parsing import (
     normalize_combos, parse_for_overview,
     split_host_port, parse_hosts_ports,
     parse_file_hosts_ports_detailed, is_hostname,
+    extract_plugin_id_from_filename, group_files_by_workflow,
 )
 from .render import (
     render_scan_table, render_severity_table, render_file_list_table,
@@ -22,8 +23,9 @@ from .render import (
 )
 from .fs import (
     list_dirs, list_files, read_text_lines, safe_print_file,
-    build_results_paths, is_review_complete, rename_review_complete,
-    undo_review_complete, default_page_size, pretty_severity_label, write_work_files
+    build_results_paths, is_review_complete, is_reviewed_filename,
+    rename_review_complete, undo_review_complete, default_page_size,
+    pretty_severity_label, write_work_files
 )
 from .tools import (
     build_nmap_cmd, build_netexec_cmd,

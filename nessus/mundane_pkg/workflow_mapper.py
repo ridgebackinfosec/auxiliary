@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Optional
 import yaml
 
+from .logging_setup import log_error
+
 
 @dataclass
 class WorkflowStep:
@@ -105,9 +107,9 @@ class WorkflowMapper:
                     if pid:  # Skip empty strings
                         self.workflows[pid] = workflow
 
-        except Exception:
+        except Exception as e:
             # Failed to load workflows - mapper will be empty
-            pass
+            log_error(f"Failed to load workflows from {self.yaml_path}: {e}")
 
     def get_workflow(self, plugin_id: str) -> Optional[Workflow]:
         """
@@ -206,7 +208,7 @@ class WorkflowMapper:
                 # Count this workflow definition as loaded
                 workflows_loaded += 1
 
-        except Exception:
-            pass
+        except Exception as e:
+            log_error(f"Failed to load additional workflows from {yaml_path}: {e}")
 
         return workflows_loaded

@@ -18,7 +18,7 @@ from rich.text import Text
 
 from .ansi import colorize_severity_label, fmt_action, info, warn
 from .constants import SEVERITY_COLORS
-from .fs import default_page_size, list_files, pretty_severity_label
+from .fs import default_page_size, is_reviewed_filename, list_files, pretty_severity_label
 from .logging_setup import log_timing
 
 
@@ -107,7 +107,9 @@ def render_scan_table(scans: list[Path]) -> None:
 
 
 def render_severity_table(
-    severities: list[Path], msf_summary: Optional[tuple[int, int, int, int]] = None
+    severities: list[Path],
+    msf_summary: Optional[tuple[int, int, int, int]] = None,
+    workflow_summary: Optional[tuple[int, int, int, int]] = None,
 ) -> None:
     """Render a table of severity levels with review progress percentages.
 
@@ -115,6 +117,8 @@ def render_severity_table(
         severities: List of severity directory paths
         msf_summary: Optional tuple of (index, unreviewed, reviewed, total)
             for Metasploit modules row
+        workflow_summary: Optional tuple of (index, unreviewed, reviewed, total)
+            for Workflow Mapped row
     """
     table = Table(
         title=None, box=box.SIMPLE, show_lines=False, pad_edge=False
@@ -142,6 +146,16 @@ def render_severity_table(
         table.add_row(
             str(index),
             severity_cell("Metasploit Module"),
+            unreviewed_cell(unreviewed, total),
+            reviewed_cell(reviewed, total),
+            total_cell(total),
+        )
+
+    if workflow_summary:
+        index, unreviewed, reviewed, total = workflow_summary
+        table.add_row(
+            str(index),
+            severity_cell("Workflow Mapped"),
             unreviewed_cell(unreviewed, total),
             reviewed_cell(reviewed, total),
             total_cell(total),
@@ -471,19 +485,7 @@ def count_severity_files(directory: Path) -> tuple[int, int, int]:
         Tuple of (unreviewed_count, reviewed_count, total_count)
     """
     files = [f for f in list_files(directory) if f.suffix.lower() == ".txt"]
-    reviewed = [
-        f
-        for f in files
-        if f.name.lower().startswith(("review_complete", "review-complete"))
-    ]
-    reviewed += [
-        f
-        for f in files
-        if f.name.lower().startswith(
-            ("review_complete-", "review-complete-")
-        )
-    ]
-    reviewed = list(dict.fromkeys(reviewed))
+    reviewed = [f for f in files if is_reviewed_filename(f.name)]
     unreviewed = [f for f in files if f not in reviewed]
     return len(unreviewed), len(reviewed), len(files)
 

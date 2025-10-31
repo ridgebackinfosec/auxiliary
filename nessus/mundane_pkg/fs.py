@@ -105,6 +105,25 @@ def is_review_complete(path: Path) -> bool:
     return path.name.startswith(REVIEW_PREFIX)
 
 
+def is_reviewed_filename(filename: str) -> bool:
+    """Check if a filename has a review completion prefix (any variation).
+
+    Handles various formats:
+    - REVIEW_COMPLETE-filename.txt
+    - review_complete-filename.txt
+    - review-complete-filename.txt
+    (case-insensitive)
+
+    Args:
+        filename: Filename string to check
+
+    Returns:
+        True if filename has review completion prefix, False otherwise
+    """
+    lower = filename.lower()
+    return lower.startswith(("review_complete", "review-complete")) and "-" in filename
+
+
 def rename_review_complete(path: Path) -> Path:
     """Mark a file as review complete by adding prefix to filename.
 

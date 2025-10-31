@@ -28,6 +28,8 @@ from mundane_pkg import (
     parse_for_overview,
     parse_hosts_ports,
     parse_file_hosts_ports_detailed,
+    extract_plugin_id_from_filename,
+    group_files_by_workflow,
     # constants
     RESULTS_ROOT,
     PLUGIN_DETAILS_BASE,
@@ -59,6 +61,7 @@ from mundane_pkg import (
     read_text_lines,
     safe_print_file,
     build_results_paths,
+    is_reviewed_filename,
     rename_review_complete,
     undo_review_complete,
     write_work_files,
@@ -106,8 +109,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 # === Third-party imports ===
 import typer
+from rich import box
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.table import Table
 from rich.traceback import install as rich_tb_install
 
 # === Constants ===
@@ -225,14 +230,8 @@ def _plugin_id_from_filename(name_or_path: Union[Path, str]) -> Optional[str]:
     Returns:
         Plugin ID string if found, None otherwise
     """
-    name = name_or_path.name if isinstance(name_or_path, Path) else str(name_or_path)
-    lower = name.lower()
-
-    if lower.startswith(("review_complete", "review-complete")) and "-" in name:
-        name = name.split("-", 1)[1]
-
-    match = re.match(r"^(\d+)", name)
-    return match.group(1) if match else None
+    # Delegate to the exported function in parsing module
+    return extract_plugin_id_from_filename(name_or_path)
 
 
 def _plugin_details_line(path: Path) -> Optional[str]:
@@ -1688,6 +1687,111 @@ def handle_file_list_actions(
     )
 
 
+# === Workflow group browser ===
+
+
+def browse_workflow_groups(
+    scan_dir: Path,
+    workflow_groups: Dict[str, List[Tuple[Path, Path]]],
+    args: types.SimpleNamespace,
+    use_sudo: bool,
+    skipped_total: List[str],
+    reviewed_total: List[str],
+    completed_total: List[str],
+    workflow_mapper,
+) -> None:
+    """
+    Browse workflow groups and files within selected workflow.
+
+    Displays a menu of workflow names with file counts, allows selection,
+    then shows files for that workflow.
+
+    Args:
+        scan_dir: Scan directory path
+        workflow_groups: Dict mapping workflow_name -> list of (file, severity_dir) tuples
+        args: Command-line arguments
+        use_sudo: Whether sudo is available
+        skipped_total: List of skipped filenames
+        reviewed_total: List of reviewed filenames
+        completed_total: List of completed filenames
+        workflow_mapper: WorkflowMapper instance
+    """
+    if not workflow_groups:
+        warn("No files with mapped workflows found.")
+        return
+
+    while True:
+        # Build table of workflows
+        header("Workflow Mapped Files - Select Workflow")
+
+        table = Table(title="Workflows", box=box.SIMPLE)
+        table.add_column("#", style="cyan", justify="right")
+        table.add_column("Workflow Name", style="bold")
+        table.add_column("Unreviewed", justify="right")
+        table.add_column("Reviewed", justify="right")
+        table.add_column("Total", justify="right")
+
+        workflow_list = sorted(workflow_groups.items(), key=lambda x: len(x[1]), reverse=True)
+
+        for idx, (workflow_name, files) in enumerate(workflow_list, start=1):
+            total = len(files)
+            reviewed = sum(1 for (file, _) in files if is_reviewed_filename(file.name))
+            unreviewed = total - reviewed
+
+            table.add_row(
+                str(idx),
+                workflow_name,
+                str(unreviewed),
+                str(reviewed),
+                str(total),
+            )
+
+        _console_global.print(table)
+        print(fmt_action("[B] Back"))
+
+        try:
+            ans = input("Choose workflow: ").strip().lower()
+        except KeyboardInterrupt:
+            warn("\nInterrupted — returning to severity menu.")
+            return
+
+        if ans in ("b", "back", "q"):
+            return
+
+        if not ans.isdigit() or not (1 <= int(ans) <= len(workflow_list)):
+            warn(f"Invalid choice. Please enter 1-{len(workflow_list)} or [B]ack.")
+            continue
+
+        # Get selected workflow
+        workflow_idx = int(ans) - 1
+        workflow_name, workflow_files = workflow_list[workflow_idx]
+
+        # Get the workflow object for display
+        # Take the plugin ID from the first file
+        first_file = workflow_files[0][0]
+        plugin_id = extract_plugin_id_from_filename(first_file.name)
+        workflow_obj = workflow_mapper.get_workflow(plugin_id) if plugin_id else None
+
+        # Create files getter for this workflow
+        def workflow_files_getter() -> List[Tuple[Path, Path]]:
+            return workflow_files.copy()
+
+        # Browse files for this workflow
+        browse_file_list(
+            scan_dir,
+            workflow_files[0][1],  # Use severity dir from first file
+            workflow_files_getter,
+            f"Workflow: {workflow_name}",
+            args,
+            use_sudo,
+            skipped_total,
+            reviewed_total,
+            completed_total,
+            is_msf_mode=True,  # Show severity labels
+            workflow_mapper=workflow_mapper,
+        )
+
+
 # === Unified file list browser ===
 
 
@@ -1869,7 +1973,7 @@ def browse_file_list(
                 )
                 for file in candidates:
                     newp = rename_review_complete(file)
-                    if newp != file or newp.name.startswith("REVIEW_COMPLETE-"):
+                    if newp != file or is_reviewed_filename(newp.name):
                         renamed += 1
                         completed_total.append(newp.name)
                     progress.advance(task)
@@ -2157,14 +2261,7 @@ def main(args: types.SimpleNamespace) -> None:
             msf_reviewed = sum(
                 1
                 for (file, _sd) in msf_files_for_count
-                if file.name.lower().startswith(
-                    (
-                        "review_complete",
-                        "review-complete",
-                        "review_complete-",
-                        "review-complete-",
-                    )
-                )
+                if is_reviewed_filename(file.name)
             )
             msf_unrev = msf_total - msf_reviewed
 
@@ -2173,7 +2270,35 @@ def main(args: types.SimpleNamespace) -> None:
                 if has_msf
                 else None
             )
-            render_severity_table(severities, msf_summary=msf_summary)
+
+            # Workflow Mapped virtual group (menu counts)
+            workflow_files_for_count = []
+            for severity_dir in severities:
+                for file in list_files(severity_dir):
+                    if file.suffix.lower() == ".txt":
+                        plugin_id = extract_plugin_id_from_filename(file.name)
+                        if plugin_id and workflow_mapper.has_workflow(plugin_id):
+                            workflow_files_for_count.append((file, severity_dir))
+
+            has_workflows = len(workflow_files_for_count) > 0
+            workflow_total = len(workflow_files_for_count)
+            workflow_reviewed = sum(
+                1
+                for (file, _sd) in workflow_files_for_count
+                if is_reviewed_filename(file.name)
+            )
+            workflow_unrev = workflow_total - workflow_reviewed
+
+            # Calculate workflow menu index (after severities and MSF if present)
+            workflow_menu_idx = len(severities) + (1 if has_msf else 0) + 1
+
+            workflow_summary = (
+                (workflow_menu_idx, workflow_unrev, workflow_reviewed, workflow_total)
+                if has_workflows
+                else None
+            )
+
+            render_severity_table(severities, msf_summary=msf_summary, workflow_summary=workflow_summary)
 
             print(fmt_action("[B] Back"))
             info("Tip: Multi-select is supported (e.g., 1-3 or 1,3,5)")
@@ -2187,19 +2312,22 @@ def main(args: types.SimpleNamespace) -> None:
             if ans in ("b", "back", "q"):
                 break
 
-            options_count = len(severities) + (1 if has_msf else 0)
-            
+            options_count = len(severities) + (1 if has_msf else 0) + (1 if has_workflows else 0)
+
             # Parse selection (supports ranges and comma-separated)
             selected_indices = parse_severity_selection(ans, options_count)
-            
+
             if selected_indices is None:
                 warn("Invalid choice. Use single numbers, ranges (1-3), or comma-separated (1,3,5).")
                 continue
 
             # Check if MSF is included in selection
-            msf_in_selection = has_msf and options_count in selected_indices
-            
-            # Filter out MSF from severity indices
+            msf_in_selection = has_msf and (len(severities) + 1) in selected_indices
+
+            # Check if Workflow Mapped is included in selection
+            workflow_in_selection = has_workflows and workflow_menu_idx in selected_indices
+
+            # Filter out MSF and Workflow from severity indices
             severity_indices = [idx for idx in selected_indices if idx <= len(severities)]
             
             # === Multiple severities selected (or mix of severities + MSF) ===
@@ -2303,6 +2431,22 @@ def main(args: types.SimpleNamespace) -> None:
                     completed_total,
                     is_msf_mode=True,
                     workflow_mapper=workflow_mapper,
+                )
+
+            # === Workflow Mapped only ===
+            elif workflow_in_selection:
+                # Group files by workflow name
+                workflow_groups = group_files_by_workflow(workflow_files_for_count, workflow_mapper)
+
+                browse_workflow_groups(
+                    scan_dir,
+                    workflow_groups,
+                    args,
+                    use_sudo,
+                    skipped_total,
+                    reviewed_total,
+                    completed_total,
+                    workflow_mapper,
                 )
 
     # Save session before showing summary

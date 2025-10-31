@@ -327,3 +327,73 @@ def build_item_set(
             for host in hosts:
                 items.add(host)
     return items
+
+
+def extract_plugin_id_from_filename(name_or_path) -> Optional[str]:
+    """
+    Extract Nessus plugin ID from filename.
+
+    Handles both regular filenames (12345.txt) and review-complete
+    prefixed files (REVIEW_COMPLETE-12345.txt, review-complete-12345.txt).
+
+    Args:
+        name_or_path: Filename string or Path object
+
+    Returns:
+        Plugin ID string if found, None otherwise
+
+    Examples:
+        >>> extract_plugin_id_from_filename("12345.txt")
+        "12345"
+        >>> extract_plugin_id_from_filename("REVIEW_COMPLETE-12345.txt")
+        "12345"
+        >>> extract_plugin_id_from_filename("vulnerability-name-12345.txt")
+        "12345"
+    """
+    from .fs import is_reviewed_filename
+
+    # Handle both Path and str
+    if hasattr(name_or_path, 'name'):
+        name = name_or_path.name
+    else:
+        name = str(name_or_path)
+
+    # Strip review prefix if present
+    if is_reviewed_filename(name):
+        name = name.split("-", 1)[1]
+
+    # Extract leading numeric plugin ID
+    match = re.match(r"^(\d+)", name)
+    return match.group(1) if match else None
+
+
+def group_files_by_workflow(files, workflow_mapper):
+    """
+    Group files by their workflow name.
+
+    Args:
+        files: List of (file_path, severity_dir) tuples
+        workflow_mapper: WorkflowMapper instance
+
+    Returns:
+        Dict mapping workflow_name -> list of (file, severity_dir) tuples
+        Files without workflows are excluded.
+
+    Example:
+        >>> files = [(Path("57608.txt"), Path("3_High")), ...]
+        >>> groups = group_files_by_workflow(files, mapper)
+        >>> groups
+        {"SMB Signing Not Required": [(Path("57608.txt"), Path("3_High"))], ...}
+    """
+    from collections import defaultdict
+
+    groups = defaultdict(list)
+
+    for file, severity_dir in files:
+        plugin_id = extract_plugin_id_from_filename(file.name)
+        if plugin_id:
+            workflow = workflow_mapper.get_workflow(plugin_id)
+            if workflow:
+                groups[workflow.workflow_name].append((file, severity_dir))
+
+    return dict(groups)
