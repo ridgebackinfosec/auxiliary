@@ -30,7 +30,18 @@ IPV4_RE = re.compile(
 )
 
 def extract_ips(text: str) -> list[str]:
-    """Return list of valid IPv4 addresses from text (may include duplicates)."""
+    """Extract all valid IPv4 addresses from text using regex.
+
+    Args:
+        text: Input text to search for IP addresses
+
+    Returns:
+        List of IPv4 addresses (may contain duplicates)
+
+    Note:
+        Uses strict regex that validates octets are in range 0-255.
+        Duplicates are preserved; caller should dedupe if needed.
+    """
     return [m[0] for m in IPV4_RE.findall(text)]
 
 def main(argv=None) -> int:
@@ -44,10 +55,14 @@ def main(argv=None) -> int:
     try:
         text = args.input.read_text(encoding="utf-8", errors="ignore")
     except FileNotFoundError:
-        print(f"Error: input file not found: {args.input}", file=sys.stderr)
+        print(f"Error: Input file not found: {args.input}", file=sys.stderr)
+        print(f"       Please check the path and try again.", file=sys.stderr)
         return 1
+    except PermissionError:
+        print(f"Error: Permission denied reading: {args.input}", file=sys.stderr)
+        return 2
     except Exception as e:
-        print(f"Error reading input file: {e}", file=sys.stderr)
+        print(f"Error: Unable to read input file: {e}", file=sys.stderr)
         return 2
 
     ips = extract_ips(text)

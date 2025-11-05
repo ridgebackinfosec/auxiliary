@@ -35,6 +35,17 @@ IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
 def read_search_domain_from_resolv(conf: Path = Path("/etc/resolv.conf")) -> Optional[str]:
+    """Extract the search domain from /etc/resolv.conf.
+
+    Args:
+        conf: Path to resolv.conf file (default: /etc/resolv.conf)
+
+    Returns:
+        First search domain if found, None otherwise
+
+    Note:
+        Used to auto-detect the domain for SRV queries when --domain not specified.
+    """
     try:
         text = conf.read_text(encoding="utf-8", errors="ignore")
     except Exception:
@@ -51,10 +62,30 @@ def read_search_domain_from_resolv(conf: Path = Path("/etc/resolv.conf")) -> Opt
 
 
 def run(cmd: List[str]) -> subprocess.CompletedProcess:
+    """Execute a command and capture output.
+
+    Args:
+        cmd: Command and arguments as a list
+
+    Returns:
+        CompletedProcess with stdout, stderr, and returncode
+    """
     return subprocess.run(cmd, text=True, capture_output=True, check=False)
 
 
 def lookup_srv_via_nslookup(domain: str) -> List[str]:
+    """Query SRV records for Domain Controllers using nslookup.
+
+    Args:
+        domain: Domain name to query (e.g., "example.corp")
+
+    Returns:
+        List of output lines from nslookup, or empty list if query fails
+
+    Note:
+        Queries _ldap._tcp.dc._msdcs.<domain> SRV record.
+        Returns empty list if nslookup command not found.
+    """
     if not shutil.which("nslookup"):
         return []
     q = SRV_NAME_FMT.format(domain=domain)
@@ -112,6 +143,18 @@ def parse_hosts_from_dig(lines: List[str]) -> List[str]:
 
 
 def resolve_host_ips(host: str) -> List[str]:
+    """Resolve a hostname to IPv4 addresses.
+
+    Args:
+        host: Hostname to resolve (e.g., "dc01.example.corp")
+
+    Returns:
+        List of unique IPv4 addresses for the host (deduplicated)
+
+    Note:
+        Uses socket.getaddrinfo() and filters to IPv4 only.
+        Returns empty list if resolution fails.
+    """
     ips: List[str] = []
     try:
         infos = socket.getaddrinfo(host, None)
@@ -136,6 +179,17 @@ def resolve_host_ips(host: str) -> List[str]:
 
 
 def reverse_ptr(ip: str) -> Optional[str]:
+    """Perform reverse DNS lookup (PTR record) for an IP address.
+
+    Args:
+        ip: IPv4 address to look up
+
+    Returns:
+        Hostname if PTR record exists, None otherwise
+
+    Note:
+        Uses socket.gethostbyaddr() which may be slow on networks with high latency.
+    """
     try:
         name, _aliases, _ = socket.gethostbyaddr(ip)
         return name.rstrip(".")
@@ -144,6 +198,20 @@ def reverse_ptr(ip: str) -> Optional[str]:
 
 
 def run_masscan(in_scope_file: Path, rate: int, ports: str) -> List[str]:
+    """Run masscan to discover hosts with common DC ports open.
+
+    Args:
+        in_scope_file: Path to file containing target IPs/ranges
+        rate: Scan rate (packets per second)
+        ports: Comma-separated port list (default: "389,636")
+
+    Returns:
+        List of unique IPv4 addresses with specified ports open, sorted numerically
+
+    Note:
+        Fallback method when SRV queries fail. Requires masscan to be installed.
+        Writes output to DC_masscan_output in current directory.
+    """
     if not shutil.which("masscan"):
         return []
     out_path = Path("DC_masscan_output")
@@ -175,6 +243,18 @@ def run_masscan(in_scope_file: Path, rate: int, ports: str) -> List[str]:
 
 
 def load_nonempty_lines(path: Path) -> List[str]:
+    """Load lines from a file, filtering out empty lines and comments.
+
+    Args:
+        path: Path to the file to read
+
+    Returns:
+        List of non-empty, non-comment lines (stripped of whitespace)
+
+    Note:
+        Lines starting with '#' are treated as comments and skipped.
+        Returns empty list if file cannot be read.
+    """
     try:
         txt = path.read_text(encoding="utf-8", errors="ignore")
     except Exception:

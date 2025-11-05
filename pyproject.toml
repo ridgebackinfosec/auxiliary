@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ridgeback-auxiliary"
-version = "1.3.0"
+version = "1.3.1"
 description = "Collection of Python utilities for reconnaissance and security research"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -47,5 +47,6 @@ aux-split-creds = "files.split_creds:main"
 aux-iptables = "firewall.apply_iptables_blocks:main"
 
 [tool.setuptools]
-# Include all Python packages in the current directory
+# Include all Python packages and modules in the current directory
 packages = ["dns", "network", "web", "files", "firewall"]
+py-modules = ["cli"]

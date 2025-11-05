@@ -45,8 +45,11 @@ TOOLS = {
     }
 }
 
-def print_help():
-    """Display help information about the CLI."""
+def print_help() -> None:
+    """Display comprehensive help information about the CLI.
+
+    Shows usage, available tools, examples, and how to get tool-specific help.
+    """
     print("auxiliary - Ridgeback InfoSec security utilities")
     print()
     print("Usage:")
@@ -70,14 +73,23 @@ def print_help():
     print()
     print("For tool-specific help, run: auxiliary <tool> --help")
 
-def print_tools():
-    """List all available tools."""
+def print_tools() -> None:
+    """List all available tools with their descriptions.
+
+    Displays tools sorted alphabetically with brief descriptions.
+    """
     print("Available auxiliary tools:")
     for name, info in sorted(TOOLS.items()):
         print(f"  {name:15s} - {info['description']}")
 
-def main():
-    """Main entry point for the auxiliary CLI dispatcher."""
+def main() -> int:
+    """Main entry point for the auxiliary CLI dispatcher.
+
+    Routes tool commands to their respective modules. Handles --help and --list flags.
+
+    Returns:
+        Exit code: 0 for success, non-zero for errors
+    """
     if len(sys.argv) < 2 or sys.argv[1] in ['-h', '--help']:
         print_help()
         return 0

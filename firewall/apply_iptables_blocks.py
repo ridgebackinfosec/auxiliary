@@ -33,18 +33,48 @@ from datetime import datetime
 # ------------------ Privilege & shell helpers ------------------
 
 def is_root() -> bool:
+    """Check if the current process has root privileges.
+
+    Returns:
+        True if running as root (UID 0), False otherwise.
+
+    Note:
+        Returns False on Windows (no euid attribute).
+    """
     try:
         return os.geteuid() == 0
     except AttributeError:
         return False
 
 def run_cmd(cmd: list[str], capture: bool = False) -> subprocess.CompletedProcess:
+    """Execute a shell command with optional output capture.
+
+    Args:
+        cmd: Command and arguments as a list (prevents shell injection)
+        capture: If True, capture stdout/stderr for inspection
+
+    Returns:
+        CompletedProcess object containing returncode, stdout, stderr
+
+    Note:
+        Uses check=False to allow manual error handling by caller.
+    """
     return subprocess.run(cmd, check=False, text=True, capture_output=capture)
 
 # ------------------ IO helpers ------------------
 
 def load_nonempty_lines(path: Path) -> list[str]:
-    """Read lines, strip, drop empties and comments (#...)."""
+    """Read lines from a file, filtering out empty lines and comments.
+
+    Args:
+        path: Path to the file to read
+
+    Returns:
+        List of non-empty, non-comment lines (stripped of whitespace)
+
+    Note:
+        Lines starting with '#' are treated as comments and skipped.
+    """
     out: list[str] = []
     for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         s = raw.strip()
@@ -54,6 +84,18 @@ def load_nonempty_lines(path: Path) -> list[str]:
     return out
 
 def backup_iptables_rules(backup_path: Path) -> bool:
+    """Create a timestamped backup of current iptables rules.
+
+    Args:
+        backup_path: Path where the backup should be saved
+
+    Returns:
+        True if backup succeeded, False otherwise
+
+    Note:
+        Requires iptables-save command to be available and executable.
+        Prints warning to stdout if backup fails.
+    """
     try:
         cp = run_cmd(["iptables-save"], capture=True)
         if cp.returncode != 0:
@@ -67,6 +109,18 @@ def backup_iptables_rules(backup_path: Path) -> bool:
         return False
 
 def save_iptables_rules(target_path: Path) -> bool:
+    """Save current iptables rules to a persistent file.
+
+    Args:
+        target_path: Path where rules should be saved (typically /etc/iptables/rules.v4)
+
+    Returns:
+        True if save succeeded, False otherwise
+
+    Note:
+        Creates parent directories if they don't exist.
+        Used to persist rules across reboots on systems using iptables-persistent.
+    """
     try:
         cp = run_cmd(["iptables-save"], capture=True)
         if cp.returncode != 0:
@@ -83,10 +137,32 @@ def save_iptables_rules(target_path: Path) -> bool:
 # ------------------ Command builders ------------------
 
 def cmd_for_range(dst_range: str) -> list[str]:
+    """Build iptables command to DROP traffic to an IP range.
+
+    Args:
+        dst_range: IP range in format "A.B.C.D-E.F.G.H"
+
+    Returns:
+        Command list for iptables with iprange module
+
+    Note:
+        Appends rule to OUTPUT chain (blocks outbound traffic).
+    """
     # iptables -A OUTPUT -m iprange --dst-range "A.B.C.D-E.F.G.H" -j DROP
     return ["iptables", "-A", "OUTPUT", "-m", "iprange", "--dst-range", dst_range, "-j", "DROP"]
 
 def cmd_for_ip(ip: str) -> list[str]:
+    """Build iptables command to DROP traffic to a single IP.
+
+    Args:
+        ip: Single IP address in dotted quad format (e.g., "192.168.1.1")
+
+    Returns:
+        Command list for iptables with destination match
+
+    Note:
+        Appends rule to OUTPUT chain (blocks outbound traffic).
+    """
     # iptables -A OUTPUT -d "A.B.C.D" -j DROP
     return ["iptables", "-A", "OUTPUT", "-d", ip, "-j", "DROP"]
 

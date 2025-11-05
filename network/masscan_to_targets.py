@@ -22,12 +22,32 @@ import ipaddress
 # permissive IPv4-like regex (same structure as your grep)
 IP_RE = re.compile(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b")
 
-def read_lines(path: str):
+def read_lines(path: str) -> list[str]:
+    """Read lines from a file or stdin.
+
+    Args:
+        path: File path, or "-" / "/dev/stdin" for standard input
+
+    Returns:
+        List of lines from the input source
+    """
     if path == "-" or path == "/dev/stdin":
         return sys.stdin.read().splitlines()
     return Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
 
-def extract_ips_from_text(text_lines, validate: bool = True):
+def extract_ips_from_text(text_lines: list[str], validate: bool = True) -> list[str]:
+    """Extract IP addresses from text lines with optional validation.
+
+    Args:
+        text_lines: List of text lines to search
+        validate: If True, validate octets are 0-255; if False, accept any dotted-quad
+
+    Returns:
+        List of extracted IP addresses (may contain duplicates)
+
+    Note:
+        When validate=False, behaves like permissive grep and may extract invalid IPs.
+    """
     ips = []
     for ln in text_lines:
         for m in IP_RE.findall(ln):
@@ -43,7 +63,18 @@ def extract_ips_from_text(text_lines, validate: bool = True):
                     continue
     return ips
 
-def numeric_sort(ips):
+def numeric_sort(ips: list[str]) -> list[str]:
+    """Deduplicate and sort IPs numerically (not lexicographically).
+
+    Args:
+        ips: List of IP addresses (may contain duplicates)
+
+    Returns:
+        Sorted list of unique IPs, ordered by numeric value
+
+    Note:
+        Sorts as (octet1, octet2, octet3, octet4) tuples for proper ordering.
+    """
     return sorted(set(ips), key=lambda s: tuple(int(p) for p in s.split(".")))
 
 def main(argv=None) -> int:
@@ -61,10 +92,14 @@ def main(argv=None) -> int:
     try:
         lines = read_lines(args.input)
     except FileNotFoundError:
-        print(f"Error: input file not found: {args.input}", file=sys.stderr)
+        print(f"Error: Input file not found: {args.input}", file=sys.stderr)
+        print(f"       Please check the path and try again.", file=sys.stderr)
+        return 1
+    except PermissionError:
+        print(f"Error: Permission denied reading: {args.input}", file=sys.stderr)
         return 1
     except Exception as e:
-        print(f"Error reading input: {e}", file=sys.stderr)
+        print(f"Error: Unable to read input: {e}", file=sys.stderr)
         return 2
 
     ips = extract_ips_from_text(lines, validate=not args.no_validate)
