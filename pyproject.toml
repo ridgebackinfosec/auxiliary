@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ridgeback-auxiliary"
+version = "1.3.0"
+description = "Collection of Python utilities for reconnaissance and security research"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Ridgeback InfoSec"}
+]
+keywords = ["security", "penetration-testing", "reconnaissance", "infosec", "dns", "network"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+# No external dependencies - all tools use Python stdlib only
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ridgebackinfosec/auxiliary"
+Repository = "https://github.com/ridgebackinfosec/auxiliary"
+
+[project.scripts]
+# Main unified CLI dispatcher
+auxiliary = "cli:main"
+
+# Individual tool entry points with 'aux-' prefix
+aux-find-dc = "dns.find_domain_controllers:main"
+aux-reverse-dns = "dns.reverse_dns:main"
+aux-extract-ips = "network.chaos_ip_extract:main"
+aux-masscan = "network.masscan_to_targets:main"
+aux-gobuster = "web.gobuster_to_eyewitness:main"
+aux-split-lines = "files.split_lines:main"
+aux-split-creds = "files.split_creds:main"
+aux-iptables = "firewall.apply_iptables_blocks:main"
+
+[tool.setuptools]
+# Include all Python packages in the current directory
+packages = ["dns", "network", "web", "files", "firewall"]
