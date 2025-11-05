@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ridgeback-auxiliary"
-version = "1.3.1"
+version = "1.4.0"
 description = "Collection of Python utilities for reconnaissance and security research"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -45,8 +45,9 @@ aux-gobuster = "web.gobuster_to_eyewitness:main"
 aux-split-lines = "files.split_lines:main"
 aux-split-creds = "files.split_creds:main"
 aux-iptables = "firewall.apply_iptables_blocks:main"
+aux-nessus-rules = "nessus.add_out_of_scope:main"
 
 [tool.setuptools]
 # Include all Python packages and modules in the current directory
-packages = ["dns", "network", "web", "files", "firewall"]
+packages = ["dns", "network", "web", "files", "firewall", "nessus"]
 py-modules = ["cli"]

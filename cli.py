@@ -42,6 +42,10 @@ TOOLS = {
     'iptables': {
         'module': 'firewall.apply_iptables_blocks',
         'description': 'Manage iptables OUTPUT DROP rules'
+    },
+    'nessus-rules': {
+        'module': 'nessus.add_out_of_scope',
+        'description': 'Add out-of-scope systems to nessusd.rules file'
     }
 }
 
@@ -70,6 +74,7 @@ def print_help() -> None:
     print("  auxiliary split-lines --input targets --lines 1000")
     print("  auxiliary split-creds --glob 'creds-*.txt' --dedupe-users")
     print("  auxiliary iptables --ranges-file ranges.txt --apply")
+    print("  auxiliary nessus-rules --input out-of-scope.txt --apply")
     print()
     print("For tool-specific help, run: auxiliary <tool> --help")
 

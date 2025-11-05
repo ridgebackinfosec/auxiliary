@@ -62,6 +62,7 @@ aux-gobuster gobuster.txt http://example.com urls.txt
 aux-split-lines --input targets --lines 1000
 aux-split-creds --glob 'creds-*.txt' --dedupe-users
 aux-iptables --ranges-file ranges.txt --apply
+aux-nessus-rules --input out-of-scope.txt --apply
 ```
 
 ---
@@ -184,6 +185,24 @@ Small file utilities for splitting and credential processing.
   # Using script directly (no installation)
   python3 files/split_creds.py
   python3 files/split_creds.py --glob "unique-creds-*.txt" --dedupe-users --strip --sort users
+  ```
+
+---
+
+### `nessus/`
+Nessus configuration and management utilities.
+
+- **add_out_of_scope** — Add out-of-scope IP addresses and CIDR ranges to the nessusd.rules file. Automatically inserts "reject" entries before the "default accept" line, creates timestamped backups, and prevents duplicates. **Be careful** — modifying nessusd.rules requires root/sudo.
+  Examples:
+  ```bash
+  # Using installed command (dry-run by default)
+  aux-nessus-rules --input out-of-scope.txt
+  auxiliary nessus-rules --ip 10.10.11.34 --ip 192.168.1.0/24 --apply
+  sudo aux-nessus-rules --input out-of-scope.txt --apply
+
+  # Using script directly (no installation)
+  python3 nessus/add_out_of_scope.py --input out-of-scope.txt
+  sudo python3 nessus/add_out_of_scope.py --input out-of-scope.txt --apply
   ```
 
 ---
