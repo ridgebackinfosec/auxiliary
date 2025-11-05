@@ -24,6 +24,17 @@ import socket
 from pathlib import Path
 
 def load_ips(path: Path) -> list[str]:
+    """Load IP addresses from a file, ignoring comments and blank lines.
+
+    Args:
+        path: Path to the file containing IP addresses (one per line)
+
+    Returns:
+        List of IP address strings with comments and blank lines filtered out
+
+    Note:
+        Lines starting with '#' are treated as comments and ignored.
+    """
     ips = []
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         s = line.strip()
@@ -33,7 +44,19 @@ def load_ips(path: Path) -> list[str]:
     return ips
 
 def reverse_lookup(ip: str, include_aliases: bool = True) -> list[str]:
-    """Return a list of hostnames for the given IP (may be empty)."""
+    """Perform reverse DNS lookup for an IP address.
+
+    Args:
+        ip: IP address to look up
+        include_aliases: If True, include alias hostnames in results
+
+    Returns:
+        List of hostnames (primary + aliases if requested), empty if lookup fails
+
+    Note:
+        Uses socket.gethostbyaddr() which may be slow on high-latency networks.
+        Returns empty list if no PTR record exists or DNS timeout occurs.
+    """
     names: list[str] = []
     try:
         primary, aliases, _ = socket.gethostbyaddr(ip)
@@ -44,11 +67,28 @@ def reverse_lookup(ip: str, include_aliases: bool = True) -> list[str]:
                 a = a.rstrip(".")
                 if a and a not in names:
                     names.append(a)
+    except (socket.gaierror, socket.herror):
+        # Expected: No PTR record found or name resolution error
+        pass
+    except socket.timeout:
+        # Expected: DNS timeout
+        pass
     except Exception:
-        pass  # no PTR found / lookup error
+        # Unexpected error - could add debug logging in future
+        pass
     return names
 
-def run_hostnames_mode(ips: list[str], output: Path, include_aliases: bool):
+def run_hostnames_mode(ips: list[str], output: Path, include_aliases: bool) -> None:
+    """Extract unique hostnames from IPs and write sorted output.
+
+    Args:
+        ips: List of IP addresses to look up
+        output: Path to write the hostnames file
+        include_aliases: Whether to include alias hostnames
+
+    Note:
+        Output is deduplicated and sorted case-insensitively.
+    """
     results: set[str] = set()
     for ip in ips:
         for name in reverse_lookup(ip, include_aliases=include_aliases):
@@ -57,7 +97,18 @@ def run_hostnames_mode(ips: list[str], output: Path, include_aliases: bool):
     output.write_text("\n".join(sorted_names) + ("\n" if sorted_names else ""), encoding="utf-8")
     print(f"[hostnames mode] Wrote {len(sorted_names)} unique hostnames to {output}")
 
-def run_ip_map_mode(ips: list[str], output: Path):
+def run_ip_map_mode(ips: list[str], output: Path) -> None:
+    """Write IP-to-hostname mappings preserving input order.
+
+    Args:
+        ips: List of IP addresses to look up
+        output: Path to write the mapping file
+
+    Note:
+        Output format is "IP (hostname)" one per line.
+        Uses primary hostname only (no aliases).
+        Shows "unknown" for IPs without PTR records.
+    """
     lines: list[str] = []
     for ip in ips:
         names = reverse_lookup(ip, include_aliases=False)
