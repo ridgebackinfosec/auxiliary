@@ -3,28 +3,31 @@
 apply_blocks.py
 
 Add OUTPUT DROP rules with iptables for:
-  - Destination IP ranges (iprange match, from a file)
-  - Destination single IPs (from CLI flags and/or a file)
+  - IP addresses (single IPs)
+  - CIDR ranges (e.g., 192.168.1.0/24)
+  - IP ranges (e.g., 172.0.0.0-172.255.255.255)
+
+Automatically detects the target type and applies the appropriate iptables rule.
 
 SAFE BY DEFAULT: runs in dry-run mode; use --apply to perform changes.
 
 Examples:
   # Dry-run (show what would be done)
-  python apply_blocks.py --ranges-file cleaned_ip_ranges.txt --ip 1.2.3.4 --ip 5.6.7.8
+  python apply_blocks.py --targets-file all-blocks.txt
 
-  # Apply ranges only (confirm interactively)
-  sudo python apply_blocks.py --ranges-file cleaned_ip_ranges.txt --apply
+  # Apply from file (confirm interactively)
+  sudo python apply_blocks.py --targets-file all-blocks.txt --apply
 
-  # Apply single IPs from a file and CLI, non-interactive, with save
-  sudo python apply_blocks.py --ips-file block_ips.txt --ip 203.0.113.10 --apply --yes
+  # Apply from CLI arguments
+  sudo python apply_blocks.py --ip 172.0.0.0-172.255.255.255 --ip 10.21.10.31 --apply
 
-  # Apply both, skip backup (not recommended) and skip saving persistent file
-  sudo python apply_blocks.py -f cleaned_ip_ranges.txt --ip 198.51.100.22 --apply --yes --no-backup --no-save
+  # Mixed: file + CLI arguments
+  sudo python apply_blocks.py --targets-file blocks.txt --ip 192.168.1.0/24 --apply
+
+  # Non-interactive, skip backup (not recommended)
+  sudo python apply_blocks.py --targets-file blocks.txt --apply --yes --no-backup --no-save
 
   # Restore from backup (interactive selection)
-  sudo python apply_blocks.py --restore
-
-  # Restore from backup and save persistent rules
   sudo python apply_blocks.py --restore
 """
 from __future__ import annotations
@@ -250,6 +253,39 @@ def save_iptables_rules(target_path: Path) -> bool:
         print(f"Failed to save iptables rules: {e}")
         return False
 
+# ------------------ Target parsing ------------------
+
+def parse_targets(targets: list[str]) -> tuple[list[str], list[str]]:
+    """Separate targets into IP ranges (for iprange module) and single IPs/CIDR.
+
+    Args:
+        targets: List of IP addresses, CIDR ranges, and/or IP ranges
+
+    Returns:
+        Tuple of (ranges, ips) where:
+        - ranges: IP ranges containing '-' (e.g., "172.0.0.0-172.255.255.255")
+        - ips: Single IPs or CIDR ranges (e.g., "10.21.10.31" or "192.168.1.0/24")
+
+    Note:
+        Detection is based on presence of '-' character:
+        - Contains '-' → IP range (uses iprange module)
+        - No '-' → Single IP or CIDR (uses -d flag)
+    """
+    ranges: list[str] = []
+    ips: list[str] = []
+
+    for target in targets:
+        target = target.strip()
+        if not target:
+            continue
+
+        if '-' in target:
+            ranges.append(target)
+        else:
+            ips.append(target)
+
+    return ranges, ips
+
 # ------------------ Command builders ------------------
 
 def cmd_for_range(dst_range: str) -> list[str]:
@@ -268,30 +304,30 @@ def cmd_for_range(dst_range: str) -> list[str]:
     return ["iptables", "-A", "OUTPUT", "-m", "iprange", "--dst-range", dst_range, "-j", "DROP"]
 
 def cmd_for_ip(ip: str) -> list[str]:
-    """Build iptables command to DROP traffic to a single IP.
+    """Build iptables command to DROP traffic to a single IP or CIDR range.
 
     Args:
-        ip: Single IP address in dotted quad format (e.g., "192.168.1.1")
+        ip: Single IP address (e.g., "192.168.1.1") or CIDR range (e.g., "192.168.1.0/24")
 
     Returns:
         Command list for iptables with destination match
 
     Note:
         Appends rule to OUTPUT chain (blocks outbound traffic).
+        iptables natively handles both single IPs and CIDR notation with -d flag.
     """
     # iptables -A OUTPUT -d "A.B.C.D" -j DROP
+    # iptables -A OUTPUT -d "A.B.C.D/N" -j DROP
     return ["iptables", "-A", "OUTPUT", "-d", ip, "-j", "DROP"]
 
 # ------------------ Main logic ------------------
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Apply iptables OUTPUT DROP rules for IP ranges and/or single IPs (dry-run by default).")
-    p.add_argument("--ranges-file", "-f", type=Path, default=Path("cleaned_ip_ranges.txt"),
-                   help="File with destination IP ranges (one per line, e.g., 1.2.3.4-1.2.3.200). Default: cleaned_ip_ranges.txt (optional).")
-    p.add_argument("--ips-file", type=Path,
-                   help="File with destination IPs (one per line).")
+    p = argparse.ArgumentParser(description="Apply iptables OUTPUT DROP rules for IP addresses, CIDR ranges, and IP ranges (dry-run by default).")
+    p.add_argument("--targets-file", "-f", type=Path,
+                   help="File with targets to block: IP addresses, CIDR ranges, and/or IP ranges (one per line)")
     p.add_argument("--ip", action="append", default=[],
-                   help="Destination IP to block (can repeat).")
+                   help="IP address, CIDR range, or IP range to block (can repeat)")
     p.add_argument("--apply", action="store_true",
                    help="Actually apply the iptables rules. Otherwise, dry-run.")
     p.add_argument("--restore", action="store_true",
@@ -349,23 +385,27 @@ def main(argv=None) -> int:
         do_save = not args.no_save
         return restore_from_backup(selected_backup, args.save_path, do_save)
 
-    # Collect ranges (if file exists) and IPs (from file and CLI)
-    ranges: list[str] = []
-    if args.ranges_file and args.ranges_file.exists():
-        ranges = load_nonempty_lines(args.ranges_file)
+    # Collect targets from file and CLI
+    all_targets: list[str] = []
 
-    ips: list[str] = []
-    if args.ips_file:
-        if not args.ips_file.exists():
-            print(f"IPs file not found: {args.ips_file}", file=sys.stderr)
+    # Load from targets file if provided
+    if args.targets_file:
+        if not args.targets_file.exists():
+            print(f"Targets file not found: {args.targets_file}", file=sys.stderr)
             return 1
-        ips.extend(load_nonempty_lines(args.ips_file))
-    # CLI --ip can repeat
-    ips.extend([s.strip() for s in args.ip if s and s.strip()])
+        all_targets.extend(load_nonempty_lines(args.targets_file))
 
-    if not ranges and not ips:
-        print("No ranges or IPs provided. Nothing to do.")
+    # Add CLI --ip arguments
+    all_targets.extend([s.strip() for s in args.ip if s and s.strip()])
+
+    if not all_targets:
+        print("No targets provided. Use --targets-file or --ip to specify targets.", file=sys.stderr)
         return 0
+
+    # Auto-detect ranges vs single IPs/CIDR
+    ranges, ips = parse_targets(all_targets)
+
+    print(f"Parsed {len(ranges)} IP range(s) and {len(ips)} single IP(s)/CIDR range(s)")
 
     # Build planned commands
     planned: list[list[str]] = []

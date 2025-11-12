@@ -146,23 +146,43 @@ Web recon helpers.
 ### `firewall/`
 Manage iptables OUTPUT DROP rules safely.
 
-- **apply_iptables_blocks** — Add DROP rules for IP ranges and/or single IPs; dry-run by default, with `--apply` to actually run. Creates a timestamped backup before changes and can save persistent rules via `iptables-save`. Includes `--restore` flag to restore from backups. Automatically prompts to create `/etc/iptables` directory if it doesn't exist. **Be careful** — applying rules requires root/sudo.
+- **apply_iptables_blocks** — Add DROP rules for IP addresses, CIDR ranges, and IP ranges using a unified targets file. Automatically detects target types (IP ranges with `-` use iprange module, others use `-d` flag). Dry-run by default, with `--apply` to actually run. Creates timestamped backups and can save persistent rules via `iptables-save`. Includes `--restore` flag to restore from backups. Automatically prompts to create `/etc/iptables` directory if it doesn't exist. **Be careful** — applying rules requires root/sudo.
   Examples:
   ```bash
-  # Using installed command (dry-run)
-  aux-iptables --ranges-file cleaned_ip_ranges.txt --ip 1.2.3.4
+  # Using installed command (dry-run - preview changes)
+  aux-iptables --targets-file all-blocks.txt
 
-  # Apply rules
-  sudo auxiliary iptables --ranges-file cleaned_ip_ranges.txt --ips-file block_ips.txt --apply
-  sudo aux-iptables --ranges-file cleaned_ip_ranges.txt --apply --yes
+  # Apply from file
+  sudo auxiliary iptables --targets-file all-blocks.txt --apply
+
+  # Apply from CLI arguments
+  sudo aux-iptables --ip 172.0.0.0-172.255.255.255 --ip 10.21.10.31 --apply
+
+  # Mixed: file + CLI
+  sudo aux-iptables --targets-file blocks.txt --ip 192.168.1.0/24 --apply
 
   # Restore from backup (interactive)
   sudo aux-iptables --restore
 
   # Using script directly (no installation)
-  python3 firewall/apply_iptables_blocks.py --ranges-file cleaned_ip_ranges.txt --ip 1.2.3.4
-  sudo python3 firewall/apply_iptables_blocks.py --ranges-file cleaned_ip_ranges.txt --apply
+  python3 firewall/apply_iptables_blocks.py --targets-file all-blocks.txt
+  sudo python3 firewall/apply_iptables_blocks.py --targets-file blocks.txt --apply
   sudo python3 firewall/apply_iptables_blocks.py --restore
+  ```
+
+  Target file format (automatically detects each type):
+  ```
+  # IP ranges (uses iprange module)
+  172.0.0.0-172.255.255.255
+  192.0.0.0-192.255.255.255
+
+  # Single IPs
+  10.21.10.31
+  10.20.74.19
+
+  # CIDR ranges
+  192.168.1.0/24
+  10.0.0.0/8
   ```
 
 ---
