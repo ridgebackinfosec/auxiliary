@@ -250,7 +250,7 @@ def main(argv=None) -> int:
             failures += 1
             print(f"Command failed (exit {cp.returncode}). stdout/stderr:\n{cp.stdout}\n{cp.stderr}", file=sys.stderr)
         else:
-            if c[3] == "iprange":
+            if "iprange" in c:
                 print(f"Added DROP rule for range: {c[c.index('--dst-range') + 1]}")
             else:
                 print(f"Added DROP rule for IP: {c[c.index('-d') + 1]}")
