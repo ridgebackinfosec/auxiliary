@@ -146,17 +146,23 @@ Web recon helpers.
 ### `firewall/`
 Manage iptables OUTPUT DROP rules safely.
 
-- **apply_iptables_blocks** — Add DROP rules for IP ranges and/or single IPs; dry-run by default, with `--apply` to actually run. Creates a timestamped backup before changes and can save persistent rules via `iptables-save`. **Be careful** — applying rules requires root/sudo.
+- **apply_iptables_blocks** — Add DROP rules for IP ranges and/or single IPs; dry-run by default, with `--apply` to actually run. Creates a timestamped backup before changes and can save persistent rules via `iptables-save`. Includes `--restore` flag to restore from backups. Automatically prompts to create `/etc/iptables` directory if it doesn't exist. **Be careful** — applying rules requires root/sudo.
   Examples:
   ```bash
-  # Using installed command
+  # Using installed command (dry-run)
   aux-iptables --ranges-file cleaned_ip_ranges.txt --ip 1.2.3.4
+
+  # Apply rules
   sudo auxiliary iptables --ranges-file cleaned_ip_ranges.txt --ips-file block_ips.txt --apply
   sudo aux-iptables --ranges-file cleaned_ip_ranges.txt --apply --yes
+
+  # Restore from backup (interactive)
+  sudo aux-iptables --restore
 
   # Using script directly (no installation)
   python3 firewall/apply_iptables_blocks.py --ranges-file cleaned_ip_ranges.txt --ip 1.2.3.4
   sudo python3 firewall/apply_iptables_blocks.py --ranges-file cleaned_ip_ranges.txt --apply
+  sudo python3 firewall/apply_iptables_blocks.py --restore
   ```
 
 ---

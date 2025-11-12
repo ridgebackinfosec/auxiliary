@@ -20,6 +20,12 @@ Examples:
 
   # Apply both, skip backup (not recommended) and skip saving persistent file
   sudo python apply_blocks.py -f cleaned_ip_ranges.txt --ip 198.51.100.22 --apply --yes --no-backup --no-save
+
+  # Restore from backup (interactive selection)
+  sudo python apply_blocks.py --restore
+
+  # Restore from backup and save persistent rules
+  sudo python apply_blocks.py --restore
 """
 from __future__ import annotations
 import argparse
@@ -83,6 +89,112 @@ def load_nonempty_lines(path: Path) -> list[str]:
         out.append(s)
     return out
 
+def ensure_backup_dir(backup_dir: Path) -> bool:
+    """Ensure the backup directory exists, prompting user to create if needed.
+
+    Args:
+        backup_dir: Path to the backup directory
+
+    Returns:
+        True if directory exists or was created, False if user declined or creation failed
+
+    Note:
+        Prompts interactively if directory doesn't exist.
+    """
+    if backup_dir.exists():
+        return True
+
+    print(f"Directory {backup_dir} does not exist.")
+    ans = input("Create it? (yes/no): ").strip().lower()
+    if ans != "yes":
+        print("Aborted: backup directory does not exist.")
+        return False
+
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Created directory: {backup_dir}")
+        return True
+    except Exception as e:
+        print(f"Error: Failed to create directory {backup_dir}: {e}", file=sys.stderr)
+        return False
+
+def list_backups(backup_dir: Path) -> list[Path]:
+    """Find and list available iptables backup files.
+
+    Args:
+        backup_dir: Directory containing backup files
+
+    Returns:
+        List of backup file paths, sorted by modification time (newest first)
+
+    Note:
+        Looks for files matching pattern: rules.v4.bak-*
+    """
+    if not backup_dir.exists():
+        return []
+
+    backups = sorted(
+        backup_dir.glob("rules.v4.bak-*"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True
+    )
+    return backups
+
+def restore_from_backup(backup_path: Path, save_path: Path, do_save: bool) -> int:
+    """Restore iptables rules from a backup file.
+
+    Args:
+        backup_path: Path to the backup file to restore from
+        save_path: Path to save persistent rules if do_save is True
+        do_save: Whether to save rules persistently after restoring
+
+    Returns:
+        Exit code: 0 for success, non-zero for errors
+
+    Note:
+        Requires root privileges and iptables-restore command.
+    """
+    if not backup_path.exists():
+        print(f"Error: Backup file not found: {backup_path}", file=sys.stderr)
+        return 1
+
+    # Root check
+    if not is_root():
+        print("Error: restoring requires root privileges. Re-run with sudo.", file=sys.stderr)
+        return 2
+
+    print(f"Restoring iptables rules from: {backup_path}")
+
+    try:
+        # Use iptables-restore to apply the backup
+        with open(backup_path, "r", encoding="utf-8") as f:
+            cp = subprocess.run(
+                ["iptables-restore"],
+                stdin=f,
+                check=False,
+                text=True,
+                capture_output=True
+            )
+
+        if cp.returncode != 0:
+            print(f"Error: iptables-restore failed (exit {cp.returncode}).", file=sys.stderr)
+            print(f"stderr: {cp.stderr}", file=sys.stderr)
+            return 3
+
+        print("Successfully restored iptables rules.")
+
+        # Save persistent if requested
+        if do_save:
+            if not save_iptables_rules(save_path):
+                print("Warning: Failed to save rules persistently.", file=sys.stderr)
+                return 4
+
+        return 0
+
+    except Exception as e:
+        print(f"Error: Failed to restore backup: {e}", file=sys.stderr)
+        return 5
+
 def backup_iptables_rules(backup_path: Path) -> bool:
     """Create a timestamped backup of current iptables rules.
 
@@ -96,6 +208,10 @@ def backup_iptables_rules(backup_path: Path) -> bool:
         Requires iptables-save command to be available and executable.
         Prints warning to stdout if backup fails.
     """
+    # Ensure backup directory exists
+    if not ensure_backup_dir(backup_path.parent):
+        return False
+
     try:
         cp = run_cmd(["iptables-save"], capture=True)
         if cp.returncode != 0:
@@ -178,6 +294,8 @@ def main(argv=None) -> int:
                    help="Destination IP to block (can repeat).")
     p.add_argument("--apply", action="store_true",
                    help="Actually apply the iptables rules. Otherwise, dry-run.")
+    p.add_argument("--restore", action="store_true",
+                   help="Restore iptables rules from a backup file (requires root).")
     p.add_argument("--yes", action="store_true",
                    help="Assume 'yes' to confirmation (dangerous).")
     p.add_argument("--no-backup", action="store_true",
@@ -187,6 +305,49 @@ def main(argv=None) -> int:
     p.add_argument("--save-path", type=Path, default=Path("/etc/iptables/rules.v4"),
                    help="Where to write persistent rules via iptables-save. Default: /etc/iptables/rules.v4")
     args = p.parse_args(argv)
+
+    # Handle restore mode
+    if args.restore:
+        backup_dir = Path("/etc/iptables")
+        backups = list_backups(backup_dir)
+
+        if not backups:
+            print(f"No backup files found in {backup_dir}", file=sys.stderr)
+            print("Backup files should match pattern: rules.v4.bak-*", file=sys.stderr)
+            return 1
+
+        print("Available backups (newest first):")
+        for i, backup in enumerate(backups, start=1):
+            mtime = datetime.fromtimestamp(backup.stat().st_mtime)
+            print(f"  {i}. {backup.name} (modified: {mtime.strftime('%Y-%m-%d %H:%M:%S')})")
+
+        print()
+        selection = input("Enter backup number to restore (or 'q' to quit): ").strip()
+
+        if selection.lower() == 'q':
+            print("Aborted by user.")
+            return 0
+
+        try:
+            idx = int(selection) - 1
+            if idx < 0 or idx >= len(backups):
+                print(f"Error: Invalid selection. Please choose 1-{len(backups)}", file=sys.stderr)
+                return 1
+            selected_backup = backups[idx]
+        except ValueError:
+            print("Error: Invalid input. Please enter a number.", file=sys.stderr)
+            return 1
+
+        # Confirm restore
+        print(f"\nYou selected: {selected_backup.name}")
+        confirm = input("Proceed with restore? Type 'yes' to continue: ").strip().lower()
+        if confirm != "yes":
+            print("Aborted by user.")
+            return 0
+
+        # Perform restore
+        do_save = not args.no_save
+        return restore_from_backup(selected_backup, args.save_path, do_save)
 
     # Collect ranges (if file exists) and IPs (from file and CLI)
     ranges: list[str] = []
