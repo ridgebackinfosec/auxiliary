@@ -1,6 +1,6 @@
 # Ridgeback InfoSec — auxiliary scripts/tools
 
-Collection of small Python3 utilities used for reconnaissance, list processing, and local tooling. **All tools are stdlib-only** (no pip packages required).
+Collection of small Python3 utilities used for reconnaissance, list processing, and local tooling. **Most tools are stdlib-only** (no pip packages required); the exception is `webtech_fingerprint` (web/), which needs `requests`, `beautifulsoup4`, and `playwright` — see the `web/` section below.
 
 Tested with Python 3.8+.
 
@@ -59,6 +59,7 @@ aux-reverse-dns --input ips.txt --output hostnames.txt
 aux-extract-ips --input ~/chaos --output ~/order
 aux-masscan masscan_output --output targets
 aux-gobuster gobuster.txt http://example.com urls.txt
+aux-webtech https://target.example.com
 aux-split-lines --input targets --lines 1000
 aux-split-creds --glob 'creds-*.txt' --dedupe-users
 aux-iptables --ranges-file ranges.txt --apply
@@ -139,6 +140,23 @@ Web recon helpers.
   # Using script directly (no installation)
   python3 web/gobuster_to_eyewitness.py gobuster_output.txt http://example.com urls_for_eyewitness.txt
   cat gobuster_output.txt | python3 web/gobuster_to_eyewitness.py - http://example.com urls.txt --dedupe
+  ```
+
+- **webtech_fingerprint** — Wappalyzer-style technology/version fingerprinting tool for web app pentests. Loads each target in a headless browser via Playwright, identifies third-party JS/CSS libraries and versions (plus `Server`/`X-Powered-By` headers and `<meta name="generator">`), cross-checks each against endoflife.date and, where available, the GitHub releases/security-advisories API, and writes per-host `.json`/`.txt` reports plus a bundled `webtech_fingerprint_results.zip`. Requires one-time setup beyond `pip install`:
+  ```bash
+  pip install -r requirements.txt
+  playwright install chromium
+  ```
+  Examples:
+  ```bash
+  # Using installed command
+  aux-webtech https://target.example.com
+  aux-webtech -f targets.txt -o results/
+  auxiliary webtech https://target.example.com --no-eol
+
+  # Using script directly (no installation)
+  python3 web/webtech_fingerprint.py https://target.example.com
+  python3 web/webtech_fingerprint.py -f targets.txt -o results/
   ```
 
 ---
@@ -245,6 +263,6 @@ For Nessus vulnerability review workflows, please use the standalone Mundane rep
 
 ## Notes & recommendations
 
-- All tools use Python standard library only (stdlib). No external dependencies required.
+- All tools use the Python standard library only (stdlib), with one exception: `webtech_fingerprint` (web/) requires `requests`, `beautifulsoup4`, and `playwright` (`pip install -r requirements.txt` then `playwright install chromium`).
 - Firewall tools will require root (`sudo`) when using `--apply` or saving persistent iptables rules.
 - Examples are intentionally explicit so you can copy/paste; tweak paths/options per your workflow.

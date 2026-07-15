@@ -31,6 +31,10 @@ TOOLS = {
         'module': 'web.gobuster_to_eyewitness',
         'description': 'Convert Gobuster output to EyeWitness URLs'
     },
+    'webtech': {
+        'module': 'web.webtech_fingerprint',
+        'description': 'Wappalyzer-style tech/version fingerprinter for web apps'
+    },
     'split-lines': {
         'module': 'files.split_lines',
         'description': 'Split files into fixed-line batches'
@@ -71,6 +75,7 @@ def print_help() -> None:
     print("  auxiliary extract-ips --input ~/chaos --output ~/order")
     print("  auxiliary masscan masscan_output --output targets")
     print("  auxiliary gobuster gobuster.txt http://example.com urls.txt")
+    print("  auxiliary webtech https://target.example.com")
     print("  auxiliary split-lines --input targets --lines 1000")
     print("  auxiliary split-creds --glob 'creds-*.txt' --dedupe-users")
     print("  auxiliary iptables --ranges-file ranges.txt --apply")

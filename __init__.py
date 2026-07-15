@@ -4,4 +4,4 @@ Auxiliary - Collection of Python utilities for reconnaissance and security resea
 Developed by Ridgeback InfoSec.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.5.0"

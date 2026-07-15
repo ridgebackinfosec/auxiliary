@@ -1,2 +1,8 @@
-# All tools in this repository use Python standard library only.
-# No external dependencies required.
+# Only web/webtech_fingerprint.py requires external packages; every other
+# tool in this repository uses the Python standard library only.
+requests>=2.31
+beautifulsoup4>=4.12
+playwright>=1.40
+#
+# After installing, playwright also needs its browser binary:
+#   playwright install chromium

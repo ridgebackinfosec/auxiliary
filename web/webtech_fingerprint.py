@@ -1644,7 +1644,7 @@ def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, 
     return data
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="Wappalyzer-style tech/version fingerprinter")
     ap.add_argument("url", nargs="?", help="a single target URL")
     ap.add_argument("-f", "--targets-file", help="text file with one target URL per line (blank lines and '#' comments are skipped)")
@@ -1662,7 +1662,7 @@ def main():
     ap.add_argument("--no-eol", action="store_true", help="skip the endoflife.date support/EOL lookup for each detected library")
     ap.add_argument("--no-repo-check", action="store_true", help="skip source-repo detection and the GitHub release/security-advisory lookup")
     ap.add_argument("--no-zip", action="store_true", help="don't bundle the transcript/.json/.txt output into webtech_fingerprint_results.zip")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if not args.url and not args.targets_file and not args.request_file:
         ap.error("provide a URL, --targets-file, or --request-file")
@@ -1752,6 +1752,8 @@ def main():
         print("Wrote " + transcript_path)
         print("Wrote " + zip_path)
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
