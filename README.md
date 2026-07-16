@@ -142,7 +142,7 @@ Web recon helpers.
   cat gobuster_output.txt | python3 web/gobuster_to_eyewitness.py - http://example.com urls.txt --dedupe
   ```
 
-- **webtech_fingerprint** — Wappalyzer-style technology/version fingerprinting tool for web app pentests. Loads each target in a headless browser via Playwright, identifies third-party JS/CSS libraries and versions (plus `Server`/`X-Powered-By` headers and `<meta name="generator">`), cross-checks each against endoflife.date and, where available, the GitHub releases/security-advisories API, and writes per-host `.json`/`.txt` reports plus a bundled `webtech_fingerprint_results.zip`. Requires one-time setup beyond `pip install`:
+- **webtech_fingerprint** — Wappalyzer-style technology/version fingerprinting tool for web app pentests. Loads each target in a headless browser via Playwright, identifies third-party JS/CSS libraries and versions (plus `Server`/`X-Powered-By` headers and `<meta name="generator">`), and cross-checks each against endoflife.date and, where available, the GitHub releases/security-advisories API. By default only `webtech_fingerprint_results.zip` is left in the output directory (per-host `.json`/`.txt` and a full transcript are bundled inside it, then the loose copies are deleted) — pass `--no-zip` to keep the loose files instead, or extract the zip to get them after the fact. Requires one-time setup beyond `pip install`:
   ```bash
   pip install -r requirements.txt
   playwright install chromium
@@ -157,6 +157,14 @@ Web recon helpers.
   # Using script directly (no installation)
   python3 web/webtech_fingerprint.py https://target.example.com
   python3 web/webtech_fingerprint.py -f targets.txt -o results/
+  ```
+  Offline/network-isolated workflow: component detection needs no external network (only the endoflife.date/GitHub enrichment step does, and it already fails soft rather than crashing). Inside a locked-down network, run with `--no-eol --no-repo-check` to skip the doomed-to-fail lookups and their timeouts entirely, producing a zip with accurate version data but no EOL/support status. Once you have connectivity again (e.g. after scp'ing the zip to another machine), run `--enrich` against it to fill in exactly the lookups that were missing or previously unreachable, without re-crawling the target:
+  ```bash
+  # Inside the isolated network
+  aux-webtech https://target.example.com --no-eol --no-repo-check -o results/
+
+  # On a machine with internet access
+  aux-webtech --enrich results/webtech_fingerprint_results.zip -o results/
   ```
 
 ---

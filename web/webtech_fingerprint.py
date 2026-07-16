@@ -63,7 +63,12 @@ a full transcript of the terminal output plus every per-host .json/.txt
 file actually written -- is bundled into a single
 webtech_fingerprint_results.zip in the output directory, so the whole
 run's evidence can be handed off (e.g. to a downstream analysis skill) as
-one file instead of a loose folder of outputs.
+one file instead of a loose folder of outputs. By default the loose
+.json/.txt/transcript files are then deleted, leaving ONLY the zip behind
+-- extract it if you want the individual files. Pass --no-zip to skip
+zipping entirely and keep the loose files instead. An explicit --json path
+is always preserved on disk (in addition to being in the zip), since you
+pointed it there on purpose.
 
 Detection methods, in order of reliability:
   - js-global:       reads a live runtime value, e.g. window.jQuery.fn.jquery,
@@ -97,6 +102,7 @@ USAGE:
     python3 webtech_fingerprint.py https://target.example.com --no-zip
     python3 webtech_fingerprint.py -r captured_request.py -o results/
     python3 webtech_fingerprint.py -r captured_request.curl -o results/
+    python3 webtech_fingerprint.py --enrich webtech_fingerprint_results.zip -o results/
 
 -r/--request-file crawls as an authenticated user instead of anonymously --
 point it at a file holding a captured, logged-in request (Burp Suite's
@@ -104,8 +110,22 @@ point it at a file holding a captured, logged-in request (Burp Suite's
 file) and it's parsed for the target URL plus every header/cookie that
 session used, so components that only render post-login (e.g. behind an
 authwall) get picked up too. Replaces the positional url argument -- not
-combinable with -f/--targets-file, since a captured session is inherently
-tied to one specific target.
+combinable with -f/--targets-file/--enrich, since a captured session is
+inherently tied to one specific target.
+
+--enrich is the fourth, mutually-exclusive alternative to url/-f/-r: point
+it at a webtech_fingerprint_results.zip produced by an earlier run and it
+re-attempts ONLY the endoflife.date/GitHub lookups that couldn't complete
+(or were never attempted, e.g. --no-eol/--no-repo-check was used originally)
+-- it never re-crawls the target and never touches Playwright at all. This
+is built for network-isolated engagements: run normally inside the locked-
+down network (component/version detection needs no external network at all
+-- only this EOL/GitHub enrichment step does, and it already fails soft
+rather than crashing; pass --no-eol --no-repo-check up front to skip the
+doomed-to-fail lookups and their timeouts entirely), scp the resulting
+webtech_fingerprint_results.zip to an internet-connected machine, then run
+--enrich against it there to produce a new zip with the same evidence as if
+the original run had internet access throughout.
 
 NOTE: The endoflife.date lookup (see 3. above) requires outbound internet
 access to https://endoflife.date/api/v1/ separate from access to the target
@@ -127,11 +147,13 @@ still out of scope (a follow-up enhancement, e.g. via retire.js's DB).
 
 import argparse
 import ast
+import glob
 import io
 import json
 import os
 import re
 import sys
+import tempfile
 import warnings
 import zipfile
 from urllib.parse import urljoin, urlparse
@@ -937,6 +959,7 @@ def build_eol_finding(name, version):
             "version_release_date": None,
             "status_label": None,
             "url": url,
+            "lookup_failed": True,
             "summary": (
                 "Couldn't reach endoflife.date to check " + name + " " + version
                 + " (network error, rate limit, or the product isn't listed there)."
@@ -962,6 +985,7 @@ def build_eol_finding(name, version):
             "version_release_date": version_release_date,
             "status_label": None,
             "url": url,
+            "lookup_failed": False,
             "summary": "No matching release cycle found on endoflife.date for " + name + " " + version + ".",
         }
 
@@ -1020,6 +1044,7 @@ def build_eol_finding(name, version):
         "version_release_date": version_release_date,
         "status_label": status_label,
         "url": url,
+        "lookup_failed": False,
         "summary": summary,
     }
 
@@ -1047,6 +1072,7 @@ def build_server_component_finding(name, version):
     if key in ("microsoftiis", "iis"):
         return {
             "status_label": None,
+            "lookup_failed": False,
             "summary": (
                 "IIS/" + version + " detected, but IIS's own version number isn't "
                 "independently tracked on endoflife.date and doesn't map 1:1 to a single "
@@ -1288,6 +1314,13 @@ def build_repo_finding(source_repo, version):
                 line += " (affects: " + "; ".join(ranges) + ")"
             lines.append(line)
 
+    # Retryable iff the failure was a real github.com-side fetch problem
+    # (network error, 403 rate limit, 404, non-JSON body -- see
+    # fetch_github_json) -- NOT the permanent "not github.com, unsupported"
+    # limitation set by fetch_github_repo_info, since retrying that on every
+    # --enrich run would never succeed and would just add noise forever.
+    lookup_failed = host == "github.com" and bool(info["releases_error"] or info["advisories_error"])
+
     return {
         "url": url,
         "owner": owner,
@@ -1295,6 +1328,9 @@ def build_repo_finding(source_repo, version):
         "latest_release_tag": latest_release_tag,
         "latest_release_date": latest_release_date,
         "advisory_count": advisory_count,
+        "releases_error": info["releases_error"],
+        "advisories_error": info["advisories_error"],
+        "lookup_failed": lookup_failed,
         "summary": "\n".join(lines),
     }
 
@@ -1605,15 +1641,45 @@ class _Tee:
         self.real_stream.flush()
 
 
+def write_target_report(host, data, outdir, json_path=None, write_txt=True, written_files=None):
+    """Print the report body for an already-fingerprinted (or re-enriched)
+    host and (unless disabled) write the per-host .json/.txt files -- this is
+    the native equivalent of the bash loop's `--json "${host}.json"` / `tee
+    "${host}.txt"`. Does NOT print the "=== host ===" banner -- callers print
+    that themselves before they have `data` in hand, so a target that fails
+    before this point still gets its banner in the transcript. If
+    `written_files` is passed a list, every .json/.txt path actually written
+    is appended as a `(path, is_explicit)` tuple -- `is_explicit` is True only
+    for a caller-supplied `json_path` (an explicit --json), so main() knows
+    which files to leave on disk instead of deleting after zipping (see
+    Change 3 / the zip-only cleanup step)."""
+    report_text = build_report_text(data)
+    print(report_text)
+
+    json_out = json_path or os.path.join(outdir, host + ".json")
+    with open(json_out, "w") as f:
+        json.dump(data, f, indent=2)
+    print("\nWrote " + json_out)
+    if written_files is not None:
+        written_files.append((json_out, json_path is not None))
+
+    if write_txt:
+        txt_out = os.path.join(outdir, host + ".txt")
+        with open(txt_out, "w") as f:
+            f.write(report_text + "\n")
+        print("Wrote " + txt_out)
+        if written_files is not None:
+            written_files.append((txt_out, False))
+
+    return json_out
+
+
 def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, check_repo=True, written_files=None, extra_headers=None, extra_cookies=None):
     """Fingerprint one target, print the "=== host ===" banner + report, and
     (unless disabled) write the per-host .json/.txt files -- this is the
     native equivalent of the bash loop's `echo "=== $host ==="` / `--json
-    "${host}.json"` / `tee "${host}.txt"`. If `written_files` is passed a
-    list, every .json/.txt path actually written is appended to it, so the
-    caller (main()) can bundle exactly this run's output files into the
-    results zip. `extra_headers`/`extra_cookies` (from -r) run this target
-    as an authenticated user -- see fingerprint()."""
+    "${host}.json"` / `tee "${host}.txt"`. `extra_headers`/`extra_cookies`
+    (from -r) run this target as an authenticated user -- see fingerprint()."""
     host = host_of(url)
     print("=== " + host + " ===")
 
@@ -1623,25 +1689,73 @@ def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, 
         print("ERROR fingerprinting " + url + ": " + str(e))
         return None
 
-    report_text = build_report_text(data)
-    print(report_text)
+    write_target_report(host, data, outdir, json_path=json_path, write_txt=write_txt, written_files=written_files)
+    return data
 
-    json_out = json_path or os.path.join(outdir, host + ".json")
-    with open(json_out, "w") as f:
-        json.dump(data, f, indent=2)
-    print("\nWrote " + json_out)
-    if written_files is not None:
-        written_files.append(json_out)
 
-    if write_txt:
-        txt_out = os.path.join(outdir, host + ".txt")
-        with open(txt_out, "w") as f:
-            f.write(report_text + "\n")
-        print("Wrote " + txt_out)
-        if written_files is not None:
-            written_files.append(txt_out)
+def reenrich_data(data, check_eol=True, check_repo=True):
+    """Mutate `data` (one host's already-loaded fingerprint() result dict,
+    reloaded from a prior run's .json) in place, re-running ONLY the EOL/
+    GitHub enrichment step for findings that were never attempted (--no-eol/
+    --no-repo-check on the original run, so the field is simply absent/None)
+    or that genuinely failed to reach endoflife.date/GitHub last time
+    ("lookup_failed": True -- see build_eol_finding, build_repo_finding,
+    build_server_component_finding). Never touches fingerprint()/Playwright/
+    the target -- this is the offline-safe re-enrichment half only. Returns
+    `data` for convenience."""
+    if check_eol:
+        for lib in data.get("libraries", []):
+            eol = lib.get("eol")
+            if eol is None or eol.get("lookup_failed"):
+                lib["eol"] = build_eol_finding(lib["name"], lib["version"])
+        for comp in data.get("server_components", []):
+            eol = comp.get("eol")
+            if eol is None or eol.get("lookup_failed"):
+                comp["eol"] = build_server_component_finding(comp["name"], comp["version"])
+
+    if check_repo:
+        for lib in data.get("libraries", []):
+            source_repo = lib.get("source_repo")
+            if source_repo:
+                repo_info = lib.get("repo_info")
+                if repo_info is None or repo_info.get("lookup_failed"):
+                    lib["repo_info"] = build_repo_finding(source_repo, lib["version"])
 
     return data
+
+
+def run_enrich(zip_path, outdir, write_txt=True, check_eol=True, check_repo=True, written_files=None):
+    """Read a previously-produced webtech_fingerprint_results.zip (e.g. scp'd
+    off a network-isolated box -- see --enrich), re-attempt only the EOL/
+    GitHub lookups that couldn't complete on that earlier run, and re-emit
+    per-host .json/.txt output exactly as a normal connected run would have
+    -- without re-crawling any target. Returns a list of (host, data) pairs,
+    the same shape main()'s other branches build all_rows from. Raises
+    OSError/zipfile.BadZipFile if zip_path can't be opened, ValueError if it
+    contains no .json files."""
+    with zipfile.ZipFile(zip_path) as zf:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zf.extractall(tmpdir)
+            json_paths = sorted(glob.glob(os.path.join(tmpdir, "*.json")))
+            if not json_paths:
+                raise ValueError("no .json files found inside " + zip_path)
+
+            results = []
+            for json_path in json_paths:
+                try:
+                    with open(json_path) as f:
+                        data = json.load(f)
+                    host = host_of(data["url"])
+                except (OSError, ValueError, KeyError) as e:
+                    print("ERROR reading " + os.path.basename(json_path) + " from " + zip_path + ": " + str(e))
+                    continue
+
+                print("=== " + host + " ===")
+                reenrich_data(data, check_eol=check_eol, check_repo=check_repo)
+                write_target_report(host, data, outdir, write_txt=write_txt, written_files=written_files)
+                results.append((host, data))
+
+    return results
 
 
 def main(argv=None):
@@ -1656,19 +1770,27 @@ def main(argv=None):
         "user instead of anonymously (real cookies + headers, so components that only render "
         "post-login get picked up too). Replaces the 'url' argument; not combinable with -f.",
     )
+    ap.add_argument(
+        "--enrich",
+        metavar="ZIP",
+        help="path to a previously-produced webtech_fingerprint_results.zip -- re-attempt only "
+        "the EOL/GitHub lookups that couldn't complete (or were never attempted, e.g. --no-eol/"
+        "--no-repo-check) on that earlier run, without re-crawling any target. Replaces the "
+        "'url' argument; not combinable with -f/-r.",
+    )
     ap.add_argument("-o", "--outdir", default=".", help="directory to write the per-host .json/.txt files into (default: current directory)")
-    ap.add_argument("--json", help="explicit JSON output path (single-URL mode only; ignored with --targets-file, which always auto-names per host)")
+    ap.add_argument("--json", help="explicit JSON output path (single-URL mode only; ignored with --targets-file or --enrich, which always auto-name per host)")
     ap.add_argument("--no-txt", action="store_true", help="don't write the per-host .txt report file (JSON is still written)")
     ap.add_argument("--no-eol", action="store_true", help="skip the endoflife.date support/EOL lookup for each detected library")
     ap.add_argument("--no-repo-check", action="store_true", help="skip source-repo detection and the GitHub release/security-advisory lookup")
     ap.add_argument("--no-zip", action="store_true", help="don't bundle the transcript/.json/.txt output into webtech_fingerprint_results.zip")
     args = ap.parse_args(argv)
 
-    if not args.url and not args.targets_file and not args.request_file:
-        ap.error("provide a URL, --targets-file, or --request-file")
-    provided = [bool(args.url), bool(args.targets_file), bool(args.request_file)]
+    if not args.url and not args.targets_file and not args.request_file and not args.enrich:
+        ap.error("provide a URL, --targets-file, --request-file, or --enrich")
+    provided = [bool(args.url), bool(args.targets_file), bool(args.request_file), bool(args.enrich)]
     if sum(provided) > 1:
-        ap.error("provide only one of: a URL, --targets-file, --request-file")
+        ap.error("provide only one of: a URL, --targets-file, --request-file, --enrich")
 
     extra_headers = None
     extra_cookies = None
@@ -1697,6 +1819,9 @@ def main(argv=None):
     real_stdout = sys.stdout
     sys.stdout = _Tee(real_stdout, transcript_buffer)
     try:
+        if args.json and args.enrich:
+            print("NOTE: --json is ignored with --enrich (each host from the zip is auto-named), same as --targets-file.")
+
         if args.targets_file:
             try:
                 targets = read_targets_file(args.targets_file)
@@ -1715,6 +1840,14 @@ def main(argv=None):
             data = process_target(request_file_url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, extra_headers=extra_headers, extra_cookies=extra_cookies)
             if data is not None:
                 all_rows.extend(build_summary_rows(host_of(request_file_url), data))
+        elif args.enrich:
+            try:
+                host_data_pairs = run_enrich(args.enrich, args.outdir, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files)
+            except (OSError, zipfile.BadZipFile, ValueError) as e:
+                ap.error("couldn't process --enrich zip " + args.enrich + ": " + str(e))
+            for host, data in host_data_pairs:
+                all_rows.extend(build_summary_rows(host, data))
+            print("\n" + str(len(host_data_pairs)) + " host(s) re-enriched from " + args.enrich + ".")
         else:
             data = process_target(args.url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files)
             if data is not None:
@@ -1746,11 +1879,20 @@ def main(argv=None):
         zip_path = os.path.join(args.outdir, "webtech_fingerprint_results.zip")
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(transcript_path, arcname=os.path.basename(transcript_path))
-            for path in written_files:
+            for path, _explicit in written_files:
                 if os.path.exists(path):
                     zf.write(path, arcname=os.path.basename(path))
         print("Wrote " + transcript_path)
         print("Wrote " + zip_path)
+
+        # Everything above is now inside the zip -- remove the loose copies
+        # so only webtech_fingerprint_results.zip remains, except any path
+        # the user explicitly pointed at via --json.
+        for path, explicit in written_files:
+            if not explicit and os.path.exists(path):
+                os.remove(path)
+        if os.path.exists(transcript_path):
+            os.remove(transcript_path)
 
     return 0
 
