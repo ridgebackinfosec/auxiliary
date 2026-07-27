@@ -170,6 +170,7 @@ Web recon helpers.
   # On a machine with internet access
   aux-webtech --enrich results/webtech_fingerprint_results.zip -o results/
   ```
+  Note: a WAF/CDN bot-challenge (e.g. Cloudflare Turnstile) can prevent the real page from ever being reached, producing a misleadingly clean "0 libraries detected" for the challenge page instead. This tool applies best-effort anti-detection browser hardening and prints an explicit `WARNING` (plus `"challenge_page"` in the saved JSON) when a known challenge signature is detected — treat those results as unverified.
 
 ---
 

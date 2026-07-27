@@ -91,6 +91,21 @@ Detection methods, in order of reliability:
 It also reports Server/X-Powered-By headers, cookie-based tech hints, and any
 <meta name="generator"> tag, since Wappalyzer flags those too.
 
+A WAF/CDN bot-challenge (e.g. Cloudflare Turnstile) can prevent the real page
+from ever being reached -- the headless browser gets served the challenge
+page instead, which legitimately has ~0 detectable libraries and will look
+like a false negative compared to a tool like Wappalyzer that ran in a real,
+already-verified browser session. This tool applies best-effort
+anti-detection hardening to the browser launch (disabling the most common
+automation signal, a realistic viewport) to reduce how often that happens,
+and waits longer than usual when a challenge is detected mid-crawl to give
+an automatic managed-challenge a chance to clear on its own, but makes no
+guarantees -- WAF bot detection evolves continuously. When a
+challenge page is detected via a known signature, the report is prefixed
+with an explicit WARNING and `"challenge_page"` is set in the saved JSON;
+treat that run's results as unverified and check the target manually (e.g.
+in a real browser) before relying on them.
+
 USAGE:
     pip install playwright requests beautifulsoup4 --break-system-packages
     playwright install chromium
@@ -116,7 +131,13 @@ file) and it's parsed for the target URL plus every header/cookie that
 session used, so components that only render post-login (e.g. behind an
 authwall) get picked up too. Replaces the positional url argument -- not
 combinable with -f/--targets-file/--enrich, since a captured session is
-inherently tied to one specific target.
+inherently tied to one specific target. A replayed session is only as good
+as what it actually contains -- if the original browser never earned a WAF's
+challenge-clearance cookie (e.g. Cloudflare's cf_clearance; short-lived
+tracking cookies like __cf_bm/_cfuvid are not the same thing and won't skip
+a challenge on their own), or if the WAF also binds clearance to IP/TLS
+fingerprint, replaying the capture elsewhere may still be blocked -- no
+amount of header/cookie replay can fix that.
 
 --enrich is the fourth, mutually-exclusive alternative to url/-f/-r: point
 it at a webtech_fingerprint_results.zip produced by an earlier run and it
@@ -503,6 +524,28 @@ COOKIE_FINGERPRINTS = {
     "CFID": "ColdFusion",
     "CFTOKEN": "ColdFusion",
 }
+
+# Best-effort signatures for a bot-challenge/interstitial page (e.g.
+# Cloudflare Turnstile) having been served instead of the real target --
+# not exhaustive, only covers signatures confirmed in practice. See
+# detect_challenge_page().
+CHALLENGE_PAGE_HOSTS = {"challenges.cloudflare.com"}
+CHALLENGE_PAGE_TEXT_RE = re.compile(r"Just a moment\.\.\.|Verify you are human|Checking your browser before accessing", re.IGNORECASE)
+
+
+def detect_challenge_page(resources, html):
+    """Best-effort detection that the crawled page was a bot-challenge
+    interstitial (e.g. Cloudflare Turnstile) rather than the real target --
+    returns a human-readable reason string, or None. Not a guarantee either
+    way: absence of a match doesn't prove the real page was reached, and a
+    match only covers the signatures above."""
+    for url in resources:
+        host = urlparse(url).netloc
+        if host in CHALLENGE_PAGE_HOSTS:
+            return "a resource was loaded from " + host + ", a known bot-challenge provider"
+    if CHALLENGE_PAGE_TEXT_RE.search(html or ""):
+        return "the page content matched a known bot-challenge page signature"
+    return None
 
 
 def extract_excerpt(text, start, end, context=60):
@@ -1348,7 +1391,11 @@ def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extr
     logged-in view) and a requests.Session used for every follow-up JS/CSS
     file fetch this function makes (so those don't silently fall back to an
     anonymous response, e.g. a login redirect, instead of following the
-    browser's session)."""
+    browser's session). A captured User-Agent specifically is passed via
+    new_context(user_agent=...) rather than set_extra_http_headers(), since
+    Playwright doesn't reliably apply the latter to the browser's actual UA
+    for navigation requests -- a captured session replayed with a mismatched
+    UA can get rejected by WAFs that cross-check cookie/UA consistency."""
     findings = {}
     resources = []
     headers = {}
@@ -1363,13 +1410,30 @@ def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extr
         session.cookies.update(extra_cookies)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(ignore_https_errors=True)
+        browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
 
+        # set_extra_http_headers() doesn't reliably override Chromium's own
+        # User-Agent for navigation requests -- the only reliable way is
+        # passing user_agent= at context-construction time -- so a captured
+        # session's UA (from -r/parse_request_file) needs to be pulled out
+        # and handled separately from the rest of the forwarded headers.
+        user_agent = None
+        browser_headers = {}
         if extra_headers:
-            browser_headers = {k: v for k, v in extra_headers.items() if k.lower() not in BROWSER_UNSAFE_HEADERS}
-            if browser_headers:
-                context.set_extra_http_headers(browser_headers)
+            for k, v in extra_headers.items():
+                if k.lower() == "user-agent":
+                    user_agent = v
+                elif k.lower() not in BROWSER_UNSAFE_HEADERS:
+                    browser_headers[k] = v
+
+        context = browser.new_context(
+            ignore_https_errors=True,
+            viewport={"width": 1920, "height": 1080},
+            **({"user_agent": user_agent} if user_agent else {}),
+        )
+
+        if browser_headers:
+            context.set_extra_http_headers(browser_headers)
         if extra_cookies:
             context.add_cookies([{"name": k, "value": v, "url": target_url} for k, v in extra_cookies.items()])
 
@@ -1387,6 +1451,15 @@ def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extr
 
         response = page.goto(target_url, timeout=timeout, wait_until="load")
         page.wait_for_timeout(2000)
+
+        # If this still looks like a bot-challenge page, its proof-of-work
+        # can take several more seconds beyond initial load to finish and
+        # auto-redirect to the real page -- give it a longer window before
+        # giving up, rather than snapshotting mid-challenge. Only runs when
+        # a challenge is actually suspected, so normal targets are unaffected.
+        if detect_challenge_page(resources, page.content()):
+            page.wait_for_timeout(8000)
+
         if response:
             headers = {k.lower(): v for k, v in response.headers.items()}
         cookies = context.cookies()
@@ -1395,6 +1468,8 @@ def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extr
         js_globals = probe_js_globals(page)
         html = page.content()
         browser.close()
+
+    challenge_page = detect_challenge_page(resources, html)
 
     tag_index = build_tag_index(html, final_url)
     body_cache = {}
@@ -1461,6 +1536,7 @@ def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extr
         "cookies": cookie_hits,
         "generator": generator,
         "resources_seen": sorted(seen),
+        "challenge_page": challenge_page,
     }
 
 
@@ -1471,6 +1547,18 @@ def build_report_text(data):
     lines.append("\nTarget: " + data["url"])
     if data["final_url"] != data["url"]:
         lines.append("(resolved to: " + data["final_url"] + ")")
+
+    if data.get("challenge_page"):
+        lines.append("")
+        lines.append("!" * 76)
+        lines.append(
+            "WARNING: this looks like a bot-challenge/interstitial page, not the real\n"
+            "target -- " + data["challenge_page"] + ". Detection results below are\n"
+            "unreliable; verify manually (e.g. load the target in a real browser)\n"
+            "before relying on them."
+        )
+        lines.append("!" * 76)
+
     lines.append("")
 
     if data["generator"]:
