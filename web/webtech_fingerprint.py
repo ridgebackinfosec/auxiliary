@@ -123,6 +123,7 @@ USAGE:
     python3 webtech_fingerprint.py -r captured_request.py -o results/
     python3 webtech_fingerprint.py -r captured_request.curl -o results/
     python3 webtech_fingerprint.py --enrich webtech_fingerprint_results.zip -o results/
+    python3 webtech_fingerprint.py https://target.example.com --proxy http://127.0.0.1:8080
 
 -r/--request-file crawls as an authenticated user instead of anonymously --
 point it at a file holding a captured, logged-in request (Burp Suite's
@@ -152,6 +153,14 @@ doomed-to-fail lookups and their timeouts entirely), scp the resulting
 webtech_fingerprint_results.zip to an internet-connected machine, then run
 --enrich against it there to produce a new zip with the same evidence as if
 the original run had internet access throughout.
+
+--proxy routes this tool's own traffic (both the Playwright browser
+navigation and the requests.Session used for resource-body fetches) through
+a given proxy, e.g. --proxy http://127.0.0.1:8080. This is the reliable way
+to inspect what this tool actually sends/receives in Burp/mitmproxy --
+Playwright's browser does NOT automatically honor HTTP_PROXY/HTTPS_PROXY
+environment variables the way requests-based CLI tools do, so setting those
+alone will NOT route the browser's navigation through your proxy.
 
 NOTE: The endoflife.date lookup (see 3. above) requires outbound internet
 access to https://endoflife.date/api/v1/ separate from access to the target
@@ -1384,7 +1393,7 @@ def build_repo_finding(source_repo, version):
     }
 
 
-def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extra_headers=None, extra_cookies=None):
+def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extra_headers=None, extra_cookies=None, proxy=None):
     """`extra_headers`/`extra_cookies` (from -r/parse_request_file) let this
     crawl as an authenticated user instead of anonymously -- applied to both
     the Playwright browser context (so the rendered page itself reflects the
@@ -1395,7 +1404,14 @@ def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extr
     new_context(user_agent=...) rather than set_extra_http_headers(), since
     Playwright doesn't reliably apply the latter to the browser's actual UA
     for navigation requests -- a captured session replayed with a mismatched
-    UA can get rejected by WAFs that cross-check cookie/UA consistency."""
+    UA can get rejected by WAFs that cross-check cookie/UA consistency.
+
+    `proxy` (from --proxy), if given, routes both the Playwright browser
+    navigation and the requests.Session resource fetches through it --
+    Playwright's browser does NOT automatically honor HTTP_PROXY/HTTPS_PROXY
+    environment variables the way requests-based tools do, so this is the
+    only reliable way to make this tool's own traffic visible in an
+    intercepting proxy like Burp."""
     findings = {}
     resources = []
     headers = {}
@@ -1408,9 +1424,14 @@ def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extr
         session.headers.update(extra_headers)
     if extra_cookies:
         session.cookies.update(extra_cookies)
+    if proxy:
+        session.proxies = {"http": proxy, "https": proxy}
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        launch_kwargs = {"headless": True, "args": ["--disable-blink-features=AutomationControlled"]}
+        if proxy:
+            launch_kwargs["proxy"] = {"server": proxy}
+        browser = p.chromium.launch(**launch_kwargs)
 
         # set_extra_http_headers() doesn't reliably override Chromium's own
         # User-Agent for navigation requests -- the only reliable way is
@@ -1768,7 +1789,7 @@ def write_target_report(host, data, outdir, json_path=None, write_txt=True, writ
     return json_out
 
 
-def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, check_repo=True, written_files=None, extra_headers=None, extra_cookies=None):
+def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, check_repo=True, written_files=None, extra_headers=None, extra_cookies=None, proxy=None):
     """Fingerprint one target, print the "=== host ===" banner + report, and
     (unless disabled) write the per-host .json/.txt files -- this is the
     native equivalent of the bash loop's `echo "=== $host ==="` / `--json
@@ -1778,7 +1799,7 @@ def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, 
     print("=== " + host + " ===")
 
     try:
-        data = fingerprint(url, check_eol=check_eol, check_repo=check_repo, extra_headers=extra_headers, extra_cookies=extra_cookies)
+        data = fingerprint(url, check_eol=check_eol, check_repo=check_repo, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=proxy)
     except Exception as e:
         msg = str(e)
         print("ERROR fingerprinting " + url + ": " + msg)
@@ -1886,6 +1907,13 @@ def main(argv=None):
     ap.add_argument("--no-repo-check", action="store_true", help="skip source-repo detection and the GitHub release/security-advisory lookup")
     ap.add_argument("--no-zip", action="store_true", help="don't bundle the transcript/.json/.txt output into webtech_fingerprint_results.zip")
     ap.add_argument(
+        "--proxy",
+        help="route all traffic (browser navigation + resource fetches) through this proxy, e.g. "
+        "http://127.0.0.1:8080 -- useful for inspecting this tool's own traffic in Burp/mitmproxy. "
+        "Playwright's browser does NOT automatically honor HTTP_PROXY/HTTPS_PROXY environment "
+        "variables the way requests-based tools do, so this is the only reliable way to do that.",
+    )
+    ap.add_argument(
         "--install-browser",
         action="store_true",
         help="download Playwright's Chromium browser and exit -- equivalent to 'python -m "
@@ -1944,13 +1972,13 @@ def main(argv=None):
                 ap.error("no targets found in " + args.targets_file)
             ok = 0
             for url in targets:
-                data = process_target(url, args.outdir, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files)
+                data = process_target(url, args.outdir, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, proxy=args.proxy)
                 if data is not None:
                     ok += 1
                     all_rows.extend(build_summary_rows(host_of(url), data))
             print("\n" + str(ok) + "/" + str(len(targets)) + " targets completed successfully.")
         elif args.request_file:
-            data = process_target(request_file_url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, extra_headers=extra_headers, extra_cookies=extra_cookies)
+            data = process_target(request_file_url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=args.proxy)
             if data is not None:
                 all_rows.extend(build_summary_rows(host_of(request_file_url), data))
         elif args.enrich:
@@ -1962,7 +1990,7 @@ def main(argv=None):
                 all_rows.extend(build_summary_rows(host, data))
             print("\n" + str(len(host_data_pairs)) + " host(s) re-enriched from " + args.enrich + ".")
         else:
-            data = process_target(args.url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files)
+            data = process_target(args.url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, proxy=args.proxy)
             if data is not None:
                 all_rows.extend(build_summary_rows(host_of(args.url), data))
 

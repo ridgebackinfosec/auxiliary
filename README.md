@@ -157,6 +157,7 @@ Web recon helpers.
   aux-webtech https://target.example.com
   aux-webtech -f targets.txt -o results/
   auxiliary webtech https://target.example.com --no-eol
+  aux-webtech https://target.example.com --proxy http://127.0.0.1:8080
 
   # Using script directly (no installation)
   python3 web/webtech_fingerprint.py https://target.example.com
@@ -171,6 +172,8 @@ Web recon helpers.
   aux-webtech --enrich results/webtech_fingerprint_results.zip -o results/
   ```
   Note: a WAF/CDN bot-challenge (e.g. Cloudflare Turnstile) can prevent the real page from ever being reached, producing a misleadingly clean "0 libraries detected" for the challenge page instead. This tool applies best-effort anti-detection browser hardening and prints an explicit `WARNING` (plus `"challenge_page"` in the saved JSON) when a known challenge signature is detected — treat those results as unverified.
+
+  To inspect this tool's own traffic (e.g. in Burp), use `--proxy http://127.0.0.1:8080` rather than `HTTP_PROXY`/`HTTPS_PROXY` environment variables — Playwright's browser doesn't automatically honor those the way `requests`-based tools do, so setting only the env vars will silently NOT route the browser's navigation through your proxy.
 
 ---
 
