@@ -94,6 +94,11 @@ It also reports Server/X-Powered-By headers, cookie-based tech hints, and any
 USAGE:
     pip install playwright requests beautifulsoup4 --break-system-packages
     playwright install chromium
+    # If this was installed via pipx (e.g. `pipx install`/`pipx upgrade`), the
+    # `playwright` command above won't be on PATH -- pipx only exposes this
+    # package's own commands, not a dependency's. Use this instead, which
+    # works under pip, pip -e, AND pipx installs alike:
+    aux-webtech --install-browser
     python3 webtech_fingerprint.py https://target.example.com
     python3 webtech_fingerprint.py https://target.example.com --json out.json
     python3 webtech_fingerprint.py -f targets.txt -o results/
@@ -152,6 +157,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import warnings
@@ -1686,7 +1692,14 @@ def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, 
     try:
         data = fingerprint(url, check_eol=check_eol, check_repo=check_repo, extra_headers=extra_headers, extra_cookies=extra_cookies)
     except Exception as e:
-        print("ERROR fingerprinting " + url + ": " + str(e))
+        msg = str(e)
+        print("ERROR fingerprinting " + url + ": " + msg)
+        if "playwright install" in msg.lower():
+            print(
+                "Hint: run 'aux-webtech --install-browser' (or 'auxiliary webtech "
+                "--install-browser') to download it -- this works correctly under a pipx "
+                "install too, unlike the plain 'playwright install' command Playwright suggests."
+            )
         return None
 
     write_target_report(host, data, outdir, json_path=json_path, write_txt=write_txt, written_files=written_files)
@@ -1784,7 +1797,19 @@ def main(argv=None):
     ap.add_argument("--no-eol", action="store_true", help="skip the endoflife.date support/EOL lookup for each detected library")
     ap.add_argument("--no-repo-check", action="store_true", help="skip source-repo detection and the GitHub release/security-advisory lookup")
     ap.add_argument("--no-zip", action="store_true", help="don't bundle the transcript/.json/.txt output into webtech_fingerprint_results.zip")
+    ap.add_argument(
+        "--install-browser",
+        action="store_true",
+        help="download Playwright's Chromium browser and exit -- equivalent to 'python -m "
+        "playwright install chromium' run with this exact installation's own interpreter. Needed "
+        "once per environment; especially useful after a pipx install/upgrade, since pipx doesn't "
+        "put the 'playwright' command on PATH the way a pip/venv install does.",
+    )
     args = ap.parse_args(argv)
+
+    if args.install_browser:
+        print("Downloading Playwright's Chromium browser...", flush=True)
+        return subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"]).returncode
 
     if not args.url and not args.targets_file and not args.request_file and not args.enrich:
         ap.error("provide a URL, --targets-file, --request-file, or --enrich")

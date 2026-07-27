@@ -147,6 +147,10 @@ Web recon helpers.
   pip install -r requirements.txt
   playwright install chromium
   ```
+  If this was installed via `pipx`, the `playwright` command above won't be on `PATH` (pipx only exposes this package's own commands, not a dependency's). Use this instead — it works under `pip`, `pip -e`, and `pipx` installs alike:
+  ```bash
+  aux-webtech --install-browser
+  ```
   Examples:
   ```bash
   # Using installed command
@@ -271,6 +275,6 @@ For Nessus vulnerability review workflows, please use the standalone Mundane rep
 
 ## Notes & recommendations
 
-- All tools use the Python standard library only (stdlib), with one exception: `webtech_fingerprint` (web/) requires `requests`, `beautifulsoup4`, and `playwright` (`pip install -r requirements.txt` then `playwright install chromium`).
+- All tools use the Python standard library only (stdlib), with one exception: `webtech_fingerprint` (web/) requires `requests`, `beautifulsoup4`, and `playwright` (`pip install -r requirements.txt` then `aux-webtech --install-browser`, which downloads Playwright's Chromium browser correctly regardless of whether you installed via `pip` or `pipx`).
 - Firewall tools will require root (`sudo`) when using `--apply` or saving persistent iptables rules.
 - Examples are intentionally explicit so you can copy/paste; tweak paths/options per your workflow.

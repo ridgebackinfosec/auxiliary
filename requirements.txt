@@ -6,3 +6,6 @@ playwright>=1.40
 #
 # After installing, playwright also needs its browser binary:
 #   playwright install chromium
+# If installed via pipx, `playwright` won't be on PATH -- use this instead,
+# which works under pip, pip -e, and pipx installs alike:
+#   aux-webtech --install-browser
