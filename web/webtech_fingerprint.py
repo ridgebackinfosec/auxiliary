@@ -128,17 +128,22 @@ USAGE:
 -r/--request-file crawls as an authenticated user instead of anonymously --
 point it at a file holding a captured, logged-in request (Burp Suite's
 "Copy as Python-Requests" or "Copy as curl-command" output, saved as-is to a
-file) and it's parsed for the target URL plus every header/cookie that
-session used, so components that only render post-login (e.g. behind an
-authwall) get picked up too. Replaces the positional url argument -- not
-combinable with -f/--targets-file/--enrich, since a captured session is
-inherently tied to one specific target. A replayed session is only as good
-as what it actually contains -- if the original browser never earned a WAF's
-challenge-clearance cookie (e.g. Cloudflare's cf_clearance; short-lived
-tracking cookies like __cf_bm/_cfuvid are not the same thing and won't skip
-a challenge on their own), or if the WAF also binds clearance to IP/TLS
-fingerprint, replaying the capture elsewhere may still be blocked -- no
-amount of header/cookie replay can fix that.
+file) and it's parsed for the target URL plus every header/cookie/HTTP
+method/body that session used (faithfully replaying a captured POST -- e.g.
+a login or search flow -- rather than always doing a GET), so components
+that only render post-login (e.g. behind an authwall) or only appear behind
+a POST-based flow get picked up too. Replaces the positional url argument
+-- not combinable with -f/--targets-file/--enrich, since a captured session
+is inherently tied to one specific target. Headers/method/body are applied
+only to that one top-level navigation request, not to every subsequent
+request the page triggers -- see fingerprint()'s docstring for why. A
+replayed session is only as good as what it actually contains -- if the
+original browser never earned a WAF's challenge-clearance cookie (e.g.
+Cloudflare's cf_clearance; short-lived tracking cookies like __cf_bm/_cfuvid
+are not the same thing and won't skip a challenge on their own), or if the
+WAF also binds clearance to IP/TLS fingerprint, replaying the capture
+elsewhere may still be blocked -- no amount of header/cookie replay can fix
+that.
 
 --enrich is the fourth, mutually-exclusive alternative to url/-f/-r: point
 it at a webtech_fingerprint_results.zip produced by an earlier run and it
@@ -192,7 +197,7 @@ import sys
 import tempfile
 import warnings
 import zipfile
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -246,13 +251,37 @@ def _extract_dict_literal(content, varname_pattern):
     return None
 
 
+def _extract_literal_assignment(content, varname_pattern):
+    """Finds the first top-level `<varname_pattern> = <literal>` assignment
+    (matched via ast.parse, not regex -- a POST body can be a long,
+    multi-line, heavily-escaped string that a hand-rolled regex would handle
+    poorly) and returns its ast.literal_eval'd value, or None if not found
+    or not a literal. Only ever reads literal values -- never executes the
+    file -- same security posture as the rest of this parser."""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return None
+    pattern = re.compile(varname_pattern)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and pattern.fullmatch(target.id):
+                    try:
+                        return ast.literal_eval(node.value)
+                    except (ValueError, SyntaxError):
+                        return None
+    return None
+
+
 def _parse_python_requests_file(content):
     """Parses a Burp Suite "Copy as Python-Requests" export (or any script
     following the same burp<N>_url/burp<N>_headers/burp<N>_cookies +
     requests.get(...)/requests.post(...) convention) into (url, headers,
-    cookies). Only ever reads literal values via ast.literal_eval -- never
-    executes the file -- so a captured request script can't run arbitrary
-    code just by being handed to this fingerprinter."""
+    cookies, method, body). Only ever reads literal values via
+    ast.literal_eval -- never executes the file -- so a captured request
+    script can't run arbitrary code just by being handed to this
+    fingerprinter."""
     url_m = re.search(r"burp\d*_url\s*=\s*(['\"])(.*?)\1", content)
     if not url_m:
         url_m = re.search(r"\burl\s*=\s*(['\"])(https?://.*?)\1", content)
@@ -278,7 +307,22 @@ def _parse_python_requests_file(content):
         except Exception as e:
             raise ValueError("Could not parse the cookies dict in the request file: " + str(e))
 
-    return url, headers, cookies
+    method_m = re.search(r"requests\.(get|post|put|patch|delete)\(", content, re.IGNORECASE)
+    method = method_m.group(1).upper() if method_m else "GET"
+
+    body = None
+    body_literal = _extract_literal_assignment(content, r"burp\d*_data")
+    if body_literal is None:
+        body_literal = _extract_literal_assignment(content, r"data")
+    if body_literal is not None:
+        if isinstance(body_literal, dict):
+            body = urlencode(body_literal)
+        elif isinstance(body_literal, (bytes, bytearray)):
+            body = body_literal.decode("utf-8", errors="replace")
+        else:
+            body = str(body_literal)
+
+    return url, headers, cookies, method, body
 
 
 def _unescape_ansi_c(s):
@@ -296,15 +340,16 @@ def _unescape_ansi_c(s):
 
 
 def _parse_curl_request_file(content):
-    """Parses a "Copy as curl-command" export into (url, headers, cookies).
-    Handles both bash's $'...' ANSI-C quoting (what Burp actually emits) and
-    plain '...'/"..." quoting, and joins trailing-backslash line
-    continuations first so a multi-line curl command tokenizes as one
-    logical line."""
+    """Parses a "Copy as curl-command" export into (url, headers, cookies,
+    method, body). Handles both bash's $'...' ANSI-C quoting (what Burp
+    actually emits) and plain '...'/"..." quoting, and joins
+    trailing-backslash line continuations first so a multi-line curl command
+    tokenizes as one logical line."""
     joined = re.sub(r"\\\s*\n\s*", " ", content)
 
-    def iter_quoted_args(flag):
-        pattern = r"-{}\s+(?:\$'((?:[^'\\]|\\.)*)'|'((?:[^'\\]|\\.)*)'|\"((?:[^\"\\]|\\.)*)\")".format(re.escape(flag))
+    def iter_quoted_args(*flags):
+        alt = "|".join(re.escape(f) for f in flags)
+        pattern = r"(?:{})\s+(?:\$'((?:[^'\\]|\\.)*)'|'((?:[^'\\]|\\.)*)'|\"((?:[^\"\\]|\\.)*)\")".format(alt)
         for m in re.finditer(pattern, joined):
             if m.group(1) is not None:
                 yield _unescape_ansi_c(m.group(1))
@@ -312,13 +357,13 @@ def _parse_curl_request_file(content):
                 yield m.group(2) if m.group(2) is not None else m.group(3)
 
     headers = {}
-    for h in iter_quoted_args("H"):
+    for h in iter_quoted_args("-H"):
         if ":" in h:
             k, v = h.split(":", 1)
             headers[k.strip()] = v.strip()
 
     cookies = {}
-    for c in iter_quoted_args("b"):
+    for c in iter_quoted_args("-b"):
         for part in c.split(";"):
             part = part.strip()
             if "=" in part:
@@ -343,23 +388,38 @@ def _parse_curl_request_file(content):
         raise ValueError("Could not find a target URL (https?://...) in the curl command.")
     url = next(g for g in url_m.groups() if g)
 
-    return url, headers, cookies
+    body_parts = list(iter_quoted_args("-d", "--data", "--data-raw", "--data-binary", "--data-urlencode"))
+    body = "&".join(body_parts) if body_parts else None
+
+    # -X/--request's value is a simple token (POST, PUT, ...) that curl
+    # exports don't always bother quoting, unlike headers/data -- match both
+    # quoted and bare forms rather than reusing iter_quoted_args.
+    method_m = re.search(r"(?:-X|--request)\s+(?:\$'([^']*)'|'([^']*)'|\"([^\"]*)\"|(\S+))", joined)
+    if method_m:
+        method = next(g for g in method_m.groups() if g).upper()
+    elif body:
+        method = "POST"
+    else:
+        method = "GET"
+
+    return url, headers, cookies, method, body
 
 
 def parse_request_file(path):
     """Parses a captured authenticated request -- either a Burp Suite "Copy
     as Python-Requests" script or a "Copy as curl-command" export -- into
-    (url, headers, cookies), so the fingerprinter can crawl the target using
-    a real logged-in session (real cookies + the exact headers that session
-    used) instead of an anonymous request. This is what lets it pick up
-    components that only render for an authenticated user."""
+    (url, headers, cookies, method, body), so the fingerprinter can crawl
+    the target using a real logged-in session (real cookies + the exact
+    headers/method/body that session used) instead of an anonymous GET.
+    This is what lets it pick up components that only render for an
+    authenticated user, or that only appear behind a POST-based flow."""
     with open(path, encoding="utf-8") as f:
         content = f.read()
 
     if re.search(r"^\s*curl\b", content, re.MULTILINE):
-        url, headers, cookies = _parse_curl_request_file(content)
+        url, headers, cookies, method, body = _parse_curl_request_file(content)
     elif "requests.get(" in content or "requests.post(" in content or re.search(r"burp\d*_url", content):
-        url, headers, cookies = _parse_python_requests_file(content)
+        url, headers, cookies, method, body = _parse_python_requests_file(content)
     else:
         raise ValueError(
             "Could not detect the request file format -- expected a Burp Suite "
@@ -369,7 +429,7 @@ def parse_request_file(path):
 
     if not url:
         raise ValueError("Request file parsed, but no target URL was found in it.")
-    return url, headers, cookies
+    return url, headers, cookies, method, body
 
 
 # ---------------------------------------------------------------------------
@@ -1393,18 +1453,28 @@ def build_repo_finding(source_repo, version):
     }
 
 
-def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extra_headers=None, extra_cookies=None, proxy=None):
-    """`extra_headers`/`extra_cookies` (from -r/parse_request_file) let this
-    crawl as an authenticated user instead of anonymously -- applied to both
-    the Playwright browser context (so the rendered page itself reflects the
-    logged-in view) and a requests.Session used for every follow-up JS/CSS
-    file fetch this function makes (so those don't silently fall back to an
-    anonymous response, e.g. a login redirect, instead of following the
-    browser's session). A captured User-Agent specifically is passed via
-    new_context(user_agent=...) rather than set_extra_http_headers(), since
-    Playwright doesn't reliably apply the latter to the browser's actual UA
-    for navigation requests -- a captured session replayed with a mismatched
-    UA can get rejected by WAFs that cross-check cookie/UA consistency.
+def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extra_headers=None, extra_cookies=None, proxy=None, method=None, body=None):
+    """`extra_headers`/`extra_cookies`/`method`/`body` (from -r/
+    parse_request_file) let this crawl as an authenticated user instead of
+    anonymously, faithfully replaying the captured request's HTTP method and
+    body (e.g. a POST-based login/search flow) instead of always doing a
+    GET. Cookies are applied context-wide via context.add_cookies() (a real
+    browser attaches the same cookie jar to every request in a session, so
+    that's correct here too) and User-Agent is applied context-wide via
+    new_context(user_agent=...) (set_extra_http_headers() doesn't reliably
+    override Chromium's own UA for navigation requests, and a session should
+    present a consistent UA throughout). Every OTHER captured header
+    (Accept, Sec-Fetch-*, Referer, etc.) is applied ONLY to the exact
+    top-level navigation request via page.route(), not context-wide --
+    those are legitimately specific to the one request they were captured
+    from; a real browser sends different Sec-Fetch-Dest/Referer values for
+    the document vs. the JS/CSS/image requests it triggers, and forcing the
+    navigation's values onto every subsequent request can make a site's CSP
+    or Fetch-Metadata policy silently prevent the browser from even issuing
+    those follow-up requests. A requests.Session is also used for every
+    follow-up JS/CSS file fetch this function makes (so those don't silently
+    fall back to an anonymous response instead of following the browser's
+    session).
 
     `proxy` (from --proxy), if given, routes both the Playwright browser
     navigation and the requests.Session resource fetches through it --
@@ -1418,6 +1488,8 @@ def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extr
     cookies = []
     html = ""
     final_url = target_url
+    console_messages = []
+    failed_requests = []
 
     session = requests.Session()
     if extra_headers:
@@ -1453,12 +1525,25 @@ def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extr
             **({"user_agent": user_agent} if user_agent else {}),
         )
 
-        if browser_headers:
-            context.set_extra_http_headers(browser_headers)
         if extra_cookies:
             context.add_cookies([{"name": k, "value": v, "url": target_url} for k, v in extra_cookies.items()])
 
         page = context.new_page()
+
+        # Captured headers/method/body apply ONLY to the exact top-level
+        # navigation request, not context-wide -- see fingerprint()'s
+        # docstring for why. Layering onto route.request.headers (rather
+        # than replacing wholesale) keeps anything Chromium needs to set
+        # itself while still overriding with the captured values.
+        if browser_headers or method or body:
+            def handle_navigation(route):
+                route.continue_(
+                    method=(method or route.request.method),
+                    post_data=body,
+                    headers={**route.request.headers, **browser_headers},
+                )
+
+            page.route(target_url, handle_navigation)
 
         def on_response(response):
             try:
@@ -1469,6 +1554,30 @@ def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extr
                 pass
 
         page.on("response", on_response)
+
+        # Diagnostic safety net: if resources genuinely never get requested
+        # at all (as opposed to requested-then-rejected, which on_response
+        # above already sees), it's usually because the browser blocked them
+        # client-side -- a CSP violation or similar -- which never shows up
+        # as a response. Surfacing the browser's own console output and any
+        # client-side-failed requests here means a run tells you WHY instead
+        # of just reporting a silent "0 detected".
+        def on_console(msg):
+            try:
+                if msg.type in ("error", "warning"):
+                    console_messages.append(msg.type + ": " + msg.text)
+            except Exception:
+                pass
+
+        def on_request_failed(request):
+            try:
+                failure = request.failure
+                failed_requests.append(request.url + " -- " + (failure or "unknown failure"))
+            except Exception:
+                pass
+
+        page.on("console", on_console)
+        page.on("requestfailed", on_request_failed)
 
         response = page.goto(target_url, timeout=timeout, wait_until="load")
         page.wait_for_timeout(2000)
@@ -1558,6 +1667,8 @@ def fingerprint(target_url, timeout=25000, check_eol=True, check_repo=True, extr
         "generator": generator,
         "resources_seen": sorted(seen),
         "challenge_page": challenge_page,
+        "console_warnings": console_messages,
+        "failed_requests": failed_requests,
     }
 
 
@@ -1626,6 +1737,22 @@ def build_report_text(data):
     lines.append("All JS/CSS resources loaded (" + str(len(data["resources_seen"])) + "):")
     for r in data["resources_seen"]:
         lines.append("  " + r)
+
+    # Only shown when non-empty, so a normal clean run isn't cluttered --
+    # but if expected resources never loaded at all (as opposed to loading
+    # and being flagged unconfirmed), these are the concrete, evidence-based
+    # reasons why: a browser-side block (CSP, mixed content, etc.) shows up
+    # as a console error/warning; a client-side network failure shows up as
+    # a failed request. Either points at a real cause instead of a guess.
+    if data.get("console_warnings"):
+        lines.append("\nBrowser console warnings/errors (" + str(len(data["console_warnings"])) + "):")
+        for msg in data["console_warnings"]:
+            lines.append("  " + msg)
+
+    if data.get("failed_requests"):
+        lines.append("\nRequests that failed client-side (" + str(len(data["failed_requests"])) + "):")
+        for f in data["failed_requests"]:
+            lines.append("  " + f)
 
     return "\n".join(lines)
 
@@ -1789,17 +1916,18 @@ def write_target_report(host, data, outdir, json_path=None, write_txt=True, writ
     return json_out
 
 
-def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, check_repo=True, written_files=None, extra_headers=None, extra_cookies=None, proxy=None):
+def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, check_repo=True, written_files=None, extra_headers=None, extra_cookies=None, proxy=None, method=None, body=None):
     """Fingerprint one target, print the "=== host ===" banner + report, and
     (unless disabled) write the per-host .json/.txt files -- this is the
     native equivalent of the bash loop's `echo "=== $host ==="` / `--json
-    "${host}.json"` / `tee "${host}.txt"`. `extra_headers`/`extra_cookies`
-    (from -r) run this target as an authenticated user -- see fingerprint()."""
+    "${host}.json"` / `tee "${host}.txt"`. `extra_headers`/`extra_cookies`/
+    `method`/`body` (from -r) run this target as an authenticated user --
+    see fingerprint()."""
     host = host_of(url)
     print("=== " + host + " ===")
 
     try:
-        data = fingerprint(url, check_eol=check_eol, check_repo=check_repo, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=proxy)
+        data = fingerprint(url, check_eol=check_eol, check_repo=check_repo, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=proxy, method=method, body=body)
     except Exception as e:
         msg = str(e)
         print("ERROR fingerprinting " + url + ": " + msg)
@@ -1936,13 +2064,16 @@ def main(argv=None):
     extra_headers = None
     extra_cookies = None
     request_file_url = None
+    request_method = None
+    request_body = None
     if args.request_file:
         try:
-            request_file_url, extra_headers, extra_cookies = parse_request_file(args.request_file)
+            request_file_url, extra_headers, extra_cookies, request_method, request_body = parse_request_file(args.request_file)
         except (OSError, ValueError) as e:
             ap.error("couldn't parse --request-file " + args.request_file + ": " + str(e))
         print("Parsed " + args.request_file + " -- target: " + request_file_url
-              + ", " + str(len(extra_headers)) + " header(s), " + str(len(extra_cookies)) + " cookie(s)")
+              + ", " + str(len(extra_headers)) + " header(s), " + str(len(extra_cookies)) + " cookie(s), "
+              + request_method + (" with a body" if request_body else ""))
 
     os.makedirs(args.outdir, exist_ok=True)
     check_eol = not args.no_eol
@@ -1978,7 +2109,7 @@ def main(argv=None):
                     all_rows.extend(build_summary_rows(host_of(url), data))
             print("\n" + str(ok) + "/" + str(len(targets)) + " targets completed successfully.")
         elif args.request_file:
-            data = process_target(request_file_url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=args.proxy)
+            data = process_target(request_file_url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=args.proxy, method=request_method, body=request_body)
             if data is not None:
                 all_rows.extend(build_summary_rows(host_of(request_file_url), data))
         elif args.enrich:
