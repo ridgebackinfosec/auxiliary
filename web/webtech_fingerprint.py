@@ -104,7 +104,12 @@ guarantees -- WAF bot detection evolves continuously. When a
 challenge page is detected via a known signature, the report is prefixed
 with an explicit WARNING and `"challenge_page"` is set in the saved JSON;
 treat that run's results as unverified and check the target manually (e.g.
-in a real browser) before relying on them.
+in a real browser) before relying on them. The WARNING also spells out the
+proven workaround: solve the challenge in a real browser, capture that
+authenticated request (making sure the capture includes the WAF's actual
+clearance cookie, e.g. Cloudflare's cf_clearance -- not just short-lived
+tracking cookies like __cf_bm/_cfuvid, which don't grant clearance on their
+own), and re-run with -r/--request-file (see below).
 
 USAGE:
     pip install playwright requests beautifulsoup4 --break-system-packages
@@ -1687,7 +1692,13 @@ def build_report_text(data):
             "WARNING: this looks like a bot-challenge/interstitial page, not the real\n"
             "target -- " + data["challenge_page"] + ". Detection results below are\n"
             "unreliable; verify manually (e.g. load the target in a real browser)\n"
-            "before relying on them."
+            "before relying on them.\n"
+            "Workaround: solve the challenge in a real browser, capture the\n"
+            "authenticated request (Burp's \"Copy as Python-Requests\"/\"Copy as\n"
+            "curl-command\"), confirm the capture includes the WAF's actual clearance\n"
+            "cookie (e.g. Cloudflare's cf_clearance -- not just short-lived tracking\n"
+            "cookies like __cf_bm/_cfuvid, which don't grant clearance on their own),\n"
+            "and re-run with -r/--request-file."
         )
         lines.append("!" * 76)
 
