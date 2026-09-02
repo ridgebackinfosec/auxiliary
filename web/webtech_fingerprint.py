@@ -468,6 +468,7 @@ JS_VERSION_PROBES = {
     "Leaflet":      "window.L && window.L.version",
     "Three.js":     "window.THREE && window.THREE.REVISION && ('r' + window.THREE.REVISION)",
     "React Router": "window.__reactRouterVersion && window.__reactRouterVersion",
+    "Next.js":      "window.next && window.next.version",
     # core-js exposes its own version via a well-known shared registry object
     # (used internally to detect duplicate/conflicting core-js instances) --
     # this is not present as literal text anywhere in the page or its
@@ -970,6 +971,7 @@ ENDOFLIFE_PRODUCT_SLUGS = {
     "angular2": "angular",
     "vuejs": "vue",
     "react": "react",
+    "nextjs": "nextjs",
     # Server/platform components parsed out of the Server / X-Powered-By
     # headers (see build_server_component_finding below).
     "nginx": "nginx",
