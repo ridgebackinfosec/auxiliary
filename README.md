@@ -1,3 +1,5 @@
+![auxiliary banner](auxiliary-banner.png)
+
 # Ridgeback InfoSec — auxiliary scripts/tools
 
 Collection of small Python3 utilities used for reconnaissance, list processing, and local tooling. **Most tools are stdlib-only** (no pip packages required); the exception is `webtech_fingerprint` (web/), which needs `requests`, `beautifulsoup4`, and `playwright` — see the `web/` section below.
