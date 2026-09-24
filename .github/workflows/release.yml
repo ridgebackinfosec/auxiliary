@@ -1,0 +1,83 @@
+name: Release
+
+# Cut a tag + GitHub Release automatically whenever the version in
+# pyproject.toml changes on main. Release notes come from the matching
+# section of CHANGELOG.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^version' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not parse version from pyproject.toml"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+
+      - name: Verify __init__.py version matches
+        run: |
+          VERSION='${{ steps.version.outputs.version }}'
+          INIT_VERSION=$(grep -m1 '__version__' __init__.py | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "$VERSION" != "$INIT_VERSION" ]; then
+            echo "::error::Version mismatch: pyproject.toml=$VERSION but __init__.py=$INIT_VERSION. Bump both before releasing."
+            exit 1
+          fi
+
+      - name: Skip if tag already exists
+        id: guard
+        run: |
+          VERSION='${{ steps.version.outputs.version }}'
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "Tag v$VERSION already exists; nothing to release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract release notes from CHANGELOG.md
+        if: steps.guard.outputs.skip == 'false'
+        run: |
+          VERSION='${{ steps.version.outputs.version }}'
+          # Print the body between "## [VERSION]" and the next "## [" heading.
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { grab=1; next }
+            grab && /^## \[/ { exit }
+            grab { print }
+          ' CHANGELOG.md > notes.md
+          # Trim leading/trailing blank lines.
+          sed -i -e '/./,$!d' notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::No CHANGELOG.md section found for version $VERSION. Add a '## [$VERSION]' entry before releasing."
+            exit 1
+          fi
+          echo "----- release notes -----"
+          cat notes.md
+
+      - name: Create tag and GitHub Release
+        if: steps.guard.outputs.skip == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          body_path: notes.md
+          make_latest: true
