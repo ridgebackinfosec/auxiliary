@@ -151,6 +151,34 @@ def version_at_least(ver, major: int, minor: int) -> bool:
     return bool(ver) and ver >= (major, minor)
 
 
+def choose_identity(identity, name, ssh_dir, exists):
+    """Resolve the private key ssh should use, returning (abs_path_or_None, error_or_None).
+
+    `exists` is a callable(path)->bool, injected so this is testable without touching the
+    filesystem. The returned path is always absolute so ssh never resolves it against the
+    current working directory.
+    """
+    if identity:
+        p = Path(identity).expanduser()
+        if exists(str(p)):
+            return os.path.abspath(str(p)), None
+        # A bare name (no path separator) also gets looked up in ~/.ssh, so `-i reverse_tunnel`
+        # works from any directory instead of only the current one.
+        bare = os.sep not in identity and not (os.altsep and os.altsep in identity)
+        if bare:
+            alt = ssh_dir / identity
+            if exists(str(alt)):
+                return os.path.abspath(str(alt)), None
+        return None, ("identity key not found: %s (also checked %s)"
+                      % (identity, ssh_dir / identity))
+    default = ssh_dir / name
+    if exists(str(default)):
+        return os.path.abspath(str(default)), None
+    return None, ("no identity key at %s -- run `keygen --name %s` first, or pass "
+                  "-i /path/to/key (or --ssh-host ALIAS if you use ssh-agent/~/.ssh/config)."
+                  % (default, name))
+
+
 def build_tunnel_command(host=None, user=None, identity=None, ssh_host=None,
                          socks_port=DEFAULT_SOCKS_PORT, forward=None,
                          verbose=False, keepalive=True):
@@ -623,16 +651,26 @@ def cmd_tunnel(args) -> int:
     if not args.ssh_host and not args.host:
         err("--host (or --ssh-host ALIAS) is required.")
         return 1
-    identity = args.identity
-    if not identity and not args.ssh_host:
-        cand = SSH_DIR / args.name
-        if cand.exists():
-            identity = str(cand)
     if args.config_entry:
+        # The block may be generated before keygen runs, so emit the intended path
+        # (no existence check / no error here).
+        if args.ssh_host:
+            identity = None
+        elif args.identity:
+            identity = str(Path(args.identity).expanduser())
+        else:
+            identity = str(SSH_DIR / args.name)
         alias = args.ssh_host or args.host
         print(build_config_entry(alias, args.host or alias, args.user, identity,
                                  args.socks_port, args.forward), end="")
         return 0
+    if args.ssh_host:
+        identity = None
+    else:
+        identity, ierr = choose_identity(args.identity, args.name, SSH_DIR, os.path.exists)
+        if ierr:
+            err(ierr)
+            return 1
     _warn_ssh_version(ssh)
     cmd = build_tunnel_command(host=args.host, user=args.user, identity=identity,
                                ssh_host=args.ssh_host, socks_port=args.socks_port,
@@ -667,11 +705,13 @@ def cmd_verify(args) -> int:
     if not args.ssh_host and not args.host:
         err("--host (or --ssh-host ALIAS) is required.")
         return 1
-    identity = args.identity
-    if not identity and not args.ssh_host:
-        cand = SSH_DIR / args.name
-        if cand.exists():
-            identity = str(cand)
+    if args.ssh_host:
+        identity = None
+    else:
+        identity, ierr = choose_identity(args.identity, args.name, SSH_DIR, os.path.exists)
+        if ierr:
+            err(ierr)
+            return 1
     target = args.ssh_host or (("%s@%s" % (args.user, args.host)) if args.user else args.host)
     # Use a throwaway remote port so verify does not collide with a live SOCKS tunnel
     # already holding --socks-port on the remote.

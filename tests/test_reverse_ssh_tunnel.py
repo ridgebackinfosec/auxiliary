@@ -5,6 +5,7 @@ These never shell out to a real ssh; only command-string builders, parsers,
 validators, and the HMAC helpers are exercised.
 """
 import unittest
+from pathlib import Path
 
 from pivot import reverse_ssh_tunnel as rt
 
@@ -138,6 +139,53 @@ class DiagramTests(unittest.TestCase):
         d = rt.build_diagram(sequence=True)
         self.assertIn("sequenceDiagram", d)
         self.assertIn("keygen", d)
+
+
+class ChooseIdentityTests(unittest.TestCase):
+    SSH = Path("/home/u/.ssh")
+
+    def _exists(self, present):
+        present = set(present)
+        return lambda p: p in present
+
+    def test_default_present(self):
+        path, err = rt.choose_identity(
+            None, "reverse_tunnel", self.SSH, self._exists(["/home/u/.ssh/reverse_tunnel"]))
+        self.assertIsNone(err)
+        self.assertEqual(path, "/home/u/.ssh/reverse_tunnel")
+
+    def test_default_absent_errors_with_keygen_hint(self):
+        path, err = rt.choose_identity(
+            None, "reverse_tunnel", self.SSH, self._exists([]))
+        self.assertIsNone(path)
+        self.assertIn("keygen", err)
+
+    def test_explicit_abs_present(self):
+        path, err = rt.choose_identity(
+            "/abs/key", "reverse_tunnel", self.SSH, self._exists(["/abs/key"]))
+        self.assertIsNone(err)
+        self.assertEqual(path, "/abs/key")
+
+    def test_explicit_abs_absent_errors(self):
+        path, err = rt.choose_identity(
+            "/abs/nope", "reverse_tunnel", self.SSH, self._exists([]))
+        self.assertIsNone(path)
+        self.assertIn("not found", err)
+
+    def test_bare_name_resolves_from_ssh_dir_not_pwd(self):
+        # `-i reverse_tunnel` with the key only in ~/.ssh must resolve there, not pwd.
+        path, err = rt.choose_identity(
+            "reverse_tunnel", "reverse_tunnel", self.SSH,
+            self._exists(["/home/u/.ssh/reverse_tunnel"]))
+        self.assertIsNone(err)
+        self.assertEqual(path, "/home/u/.ssh/reverse_tunnel")
+
+    def test_tilde_is_expanded(self):
+        home = str(Path("~/mykey").expanduser())
+        path, err = rt.choose_identity(
+            "~/mykey", "reverse_tunnel", self.SSH, self._exists([home]))
+        self.assertIsNone(err)
+        self.assertEqual(path, home)
 
 
 class ArgParseTests(unittest.TestCase):

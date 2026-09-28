@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-09-28
+
+### Fixed
+- `pivot/reverse_ssh_tunnel.py`: `tunnel` and `verify` now reliably use the key created by
+  `keygen`. Previously, if `~/.ssh/<name>` was not found they silently dropped the `-i`
+  flag, so `ssh` fell back to default keys/agent and failed with "Permission denied
+  (publickey)"; and a bare `-i <name>` was passed to `ssh` verbatim, so it was resolved
+  relative to the current working directory. The identity is now resolved to an absolute
+  path (a bare `-i <name>` is also looked up in `~/.ssh`, and `~` is expanded), and the
+  tools error with an actionable message pointing at `keygen` instead of running `ssh`
+  without a key.
+
 ## [1.6.0] - 2026-09-25
 
 ### Added

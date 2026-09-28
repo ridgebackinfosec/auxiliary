@@ -304,6 +304,9 @@ Reverse SSH tunnel with a SOCKS pivot mode, for **authorized engagements only**.
   auxiliary reverse-ssh install-key --from /tmp/reverse_tunnel.pub
 
   # 5. [internal sender] open the reverse SSH + SOCKS pivot (127.0.0.1:9050 on the remote)
+  #    tunnel/verify auto-use ~/.ssh/<name> from keygen (any working directory); pass -i to
+  #    override, or --ssh-host ALIAS to use ssh-agent/~/.ssh/config. If no key is found they
+  #    error with a keygen hint rather than failing later with "Permission denied".
   auxiliary reverse-ssh tunnel --socks --user USER --host REDIRECTOR
 
   # 6. verify from both ends (verify uses a throwaway remote port, so it is safe to
