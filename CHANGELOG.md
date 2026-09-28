@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-25
+
+### Added
+- New `pivot/reverse_ssh_tunnel.py` tool (`auxiliary reverse-ssh`, `aux-reverse-ssh`)
+  that automates a reverse SSH tunnel with a SOCKS pivot mode across three systems
+  (operator host, internet-facing redirector, outbound-only internal sender), for
+  authorized engagements. Standard-library only; runs on Windows or Linux for the
+  client side.
+  - Subcommands: `keygen`, `send-key`, `recv-key`, `install-key`, `tunnel`, `verify`,
+    `check`, `preflight`, and `diagram` (prints Mermaid topology/sequence diagrams).
+  - The keypair is generated on the internal sender so the private key never crosses
+    the network; only the public key is transferred.
+  - `send-key`/`recv-key` move the public key over a pure-Python TCP socket (no `nc`
+    required on either side), with always-on fingerprint comparison, optional
+    `--secret` HMAC authentication, and optional `--tls` encryption. Copy/paste over
+    an existing SSH session is the documented fallback (`install-key --pubkey`/stdin,
+    or any `--print` mode).
+  - `tunnel` defaults to a SOCKS pivot on the remote loopback `127.0.0.1:9050`
+    (proxychains-aligned), warns if the local OpenSSH client is older than 7.6, and
+    surfaces the required proxychains `[ProxyList]` line `socks5 127.0.0.1 9050`.
+    `preflight` warns against `GatewayPorts yes` for this loopback topology.
+
 ## [1.5.9] - 2026-09-24
 
 ### Fixed

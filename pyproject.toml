@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auxiliary"
-version = "1.5.9"
+version = "1.6.0"
 description = "Collection of Python utilities for reconnaissance and security research"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -52,8 +52,9 @@ aux-split-lines = "files.split_lines:main"
 aux-split-creds = "files.split_creds:main"
 aux-iptables = "firewall.apply_iptables_blocks:main"
 aux-nessus-rules = "nessus.add_out_of_scope:main"
+aux-reverse-ssh = "pivot.reverse_ssh_tunnel:main"
 
 [tool.setuptools]
 # Include all Python packages and modules in the current directory
-packages = ["dns", "network", "web", "files", "firewall", "nessus"]
+packages = ["dns", "network", "web", "files", "firewall", "nessus", "pivot"]
 py-modules = ["cli"]

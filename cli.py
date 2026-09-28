@@ -50,6 +50,10 @@ TOOLS = {
     'nessus-rules': {
         'module': 'nessus.add_out_of_scope',
         'description': 'Add out-of-scope systems to nessusd.rules file'
+    },
+    'reverse-ssh': {
+        'module': 'pivot.reverse_ssh_tunnel',
+        'description': 'Set up/establish/test a reverse SSH tunnel + SOCKS pivot'
     }
 }
 
@@ -80,6 +84,7 @@ def print_help() -> None:
     print("  auxiliary split-creds --glob 'creds-*.txt' --dedupe-users")
     print("  auxiliary iptables --ranges-file ranges.txt --apply")
     print("  auxiliary nessus-rules --input out-of-scope.txt --apply")
+    print("  auxiliary reverse-ssh diagram")
     print()
     print("For tool-specific help, run: auxiliary <tool> --help")
 

