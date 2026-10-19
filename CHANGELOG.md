@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-19
+
+### Added
+- `web/webtech_fingerprint.py`: a `-f/--targets-file` run now prints a
+  `[i/N] >> Scanning <url> ...` progress line before each target's crawl, so it's clear which
+  target is in-flight and how far through the list the run is. The line is colorized on an
+  interactive terminal and auto-disabled off a TTY, when `NO_COLOR` is set, or with the new
+  `--no-color` flag; ANSI color is stripped from the saved transcript, so the zipped artifacts
+  stay plain text for the downstream parser.
+- `web/webtech_fingerprint.py`: graceful stop and `--resume` for multi-target runs. Pressing
+  Ctrl-C once finishes the target currently being crawled (saving its results) and then stops
+  before the next one, printing an acknowledgement; a second Ctrl-C force-quits. An interrupted
+  run — graceful stop or an unexpected crash — leaves a `webtech_fingerprint_progress.json`
+  (flushed after every target) plus the loose per-host files in the output directory instead of
+  the usual single zip. Re-run the same command with `--resume` to skip finished targets, crawl
+  only what's left, and bundle the earlier and new results into one final zip with a cumulative
+  transcript. `--resume` is only valid with `-f/--targets-file`.
+
 ## [1.6.2] - 2026-10-19
 
 ### Added

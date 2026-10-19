@@ -162,6 +162,7 @@ Web recon helpers.
   auxiliary webtech https://target.example.com --no-eol
   aux-webtech https://target.example.com --proxy http://127.0.0.1:8080
   aux-webtech https://target.example.com --timeout 60000
+  aux-webtech -f targets.txt -o results/ --resume
 
   # Using script directly (no installation)
   python3 web/webtech_fingerprint.py https://target.example.com
@@ -180,6 +181,12 @@ Web recon helpers.
   To inspect this tool's own traffic (e.g. in Burp), use `--proxy http://127.0.0.1:8080` rather than `HTTP_PROXY`/`HTTPS_PROXY` environment variables — Playwright's browser doesn't automatically honor those the way `requests`-based tools do, so setting only the env vars will silently NOT route the browser's navigation through your proxy.
 
   By default each target gets up to 25s (25000 ms) to fire its initial page-load event before the navigation times out. Use `--timeout <ms>` to change that — raise it for slow SPAs or high-latency targets (e.g. `--timeout 60000`), or pass `--timeout 0` to wait indefinitely. This only bounds the initial navigation; the fixed post-load settle wait and the resource/EOL fetch timeouts are unaffected.
+
+  For a `-f/--targets-file` run, each target prints a `[i/N] >> Scanning <url>` progress line before its (otherwise silent) crawl, so you can see which target is in-flight and how far through the list the run is. The line is colorized on an interactive terminal (auto-disabled off a TTY, when `NO_COLOR` is set, or with `--no-color`; the saved transcript is always plain text). Press `Ctrl-C` once to stop gracefully — it finishes the target currently being crawled, saves its results, then stops before the next one (a second `Ctrl-C` force-quits). An interrupted run (graceful stop or an unexpected crash) leaves a `webtech_fingerprint_progress.json` plus the loose per-host files in the output directory instead of the usual single zip; re-run the same command with `--resume` to skip the finished targets, crawl only what's left, and bundle the earlier and new results into one final zip:
+  ```bash
+  aux-webtech -f targets.txt -o results/            # Ctrl-C partway through...
+  aux-webtech -f targets.txt -o results/ --resume   # ...continues where it left off
+  ```
 
 ---
 

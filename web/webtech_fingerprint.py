@@ -122,6 +122,8 @@ USAGE:
     python3 webtech_fingerprint.py https://target.example.com
     python3 webtech_fingerprint.py https://target.example.com --json out.json
     python3 webtech_fingerprint.py -f targets.txt -o results/
+    python3 webtech_fingerprint.py -f targets.txt -o results/ --resume
+    python3 webtech_fingerprint.py -f targets.txt -o results/ --no-color
     python3 webtech_fingerprint.py https://target.example.com --no-eol
     python3 webtech_fingerprint.py https://target.example.com --no-repo-check
     python3 webtech_fingerprint.py https://target.example.com --no-zip
@@ -173,6 +175,20 @@ Playwright's browser does NOT automatically honor HTTP_PROXY/HTTPS_PROXY
 environment variables the way requests-based CLI tools do, so setting those
 alone will NOT route the browser's navigation through your proxy.
 
+For a -f/--targets-file run, each target prints a "[i/N] >> Scanning <url>"
+progress line before its (otherwise-silent, up to --timeout) crawl so it's
+clear which target is in-flight and how far through the list the run is. The
+line is colorized on an interactive terminal (auto-disabled when output isn't
+a TTY, when NO_COLOR is set, or with --no-color; the saved transcript is always
+plain text). Pressing Ctrl-C once stops gracefully -- it finishes the target
+currently being crawled, writes out its results, and then stops before the
+next one (a second Ctrl-C force-quits). An interrupted run (graceful stop OR an
+unexpected crash) leaves a webtech_fingerprint_progress.json plus the loose
+per-host files in -o/--outdir instead of the usual single zip; re-run the exact
+same command with --resume added to skip the finished targets, crawl only
+what's left, and bundle the earlier and new results into one final zip (the
+progress file is removed once the whole list completes).
+
 NOTE: The endoflife.date lookup (see 3. above) requires outbound internet
 access to https://endoflife.date/api/v1/ separate from access to the target
 itself. Pass --no-eol to skip it (e.g. fully offline runs). Only a handful of
@@ -198,6 +214,7 @@ import io
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1879,11 +1896,36 @@ def read_targets_file(path):
     return targets
 
 
+# ---------------------------------------------------------------------------
+# Terminal color for the live per-target progress indicator. Color is applied
+# ONLY to the real terminal stream -- it is stripped from the captured
+# transcript (see _Tee below), so webtech_fingerprint_transcript.txt / the
+# per-host .txt / the zip stay plain text for the downstream analysis parser.
+# ---------------------------------------------------------------------------
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+ANSI_CYAN = "\x1b[36m"
+ANSI_YELLOW = "\x1b[33m"
+ANSI_BOLD = "\x1b[1m"
+ANSI_DIM = "\x1b[2m"
+ANSI_RESET = "\x1b[0m"
+
+
+def paint(s, *codes, enabled=True):
+    """Wrap `s` in the given ANSI codes when `enabled`, else return it
+    unchanged. The transcript copy is de-colored separately in _Tee, so these
+    codes only ever reach the live terminal."""
+    if not enabled or not codes:
+        return s
+    return "".join(codes) + s + ANSI_RESET
+
+
 class _Tee:
     """Duplicates writes to both the real stream and an in-memory buffer, so
     the full terminal transcript can be captured (for bundling into the
     results zip -- see main()) without changing anything about what actually
-    prints to the screen."""
+    prints to the screen. ANSI color codes are stripped from the buffered
+    (transcript) copy only -- the live terminal still gets them -- so the saved
+    transcript stays plain text for the downstream analysis parser."""
 
     def __init__(self, real_stream, buffer):
         self.real_stream = real_stream
@@ -1891,10 +1933,52 @@ class _Tee:
 
     def write(self, s):
         self.real_stream.write(s)
-        self.buffer.write(s)
+        self.buffer.write(ANSI_RE.sub("", s))
 
     def flush(self):
         self.real_stream.flush()
+
+
+# ---------------------------------------------------------------------------
+# Resume support -- a progress sidecar in the output directory records which
+# targets of a -f/--targets-file run have finished, so a run interrupted
+# (graceful Ctrl-C, or an unexpected crash) can be continued with --resume
+# instead of re-crawling from the top. Written after every completed target
+# (atomically, so a crash mid-write can't corrupt it) and removed once the
+# whole list finishes. Internal state only -- never bundled into the zip.
+# ---------------------------------------------------------------------------
+PROGRESS_FILENAME = "webtech_fingerprint_progress.json"
+
+
+def progress_path(outdir):
+    return os.path.join(outdir, PROGRESS_FILENAME)
+
+
+def write_progress(outdir, state):
+    """Atomically write the resume state (temp file + os.replace) so an
+    interruption mid-write leaves the previous good file intact rather than a
+    truncated one."""
+    path = progress_path(outdir)
+    fd, tmp = tempfile.mkstemp(dir=outdir, prefix=".progress-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
+def read_progress(outdir):
+    """Return the saved resume state dict, or None if there isn't one (or it
+    can't be read)."""
+    path = progress_path(outdir)
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
 
 
 def write_target_report(host, data, outdir, json_path=None, write_txt=True, written_files=None):
@@ -1930,14 +2014,28 @@ def write_target_report(host, data, outdir, json_path=None, write_txt=True, writ
     return json_out
 
 
-def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, check_repo=True, written_files=None, extra_headers=None, extra_cookies=None, proxy=None, method=None, body=None, timeout=25000):
+def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, check_repo=True, written_files=None, extra_headers=None, extra_cookies=None, proxy=None, method=None, body=None, timeout=25000, index=None, total=None, use_color=False):
     """Fingerprint one target, print the "=== host ===" banner + report, and
     (unless disabled) write the per-host .json/.txt files -- this is the
     native equivalent of the bash loop's `echo "=== $host ==="` / `--json
     "${host}.json"` / `tee "${host}.txt"`. `extra_headers`/`extra_cookies`/
     `method`/`body` (from -r) run this target as an authenticated user --
-    see fingerprint()."""
+    see fingerprint().
+
+    `index`/`total` (set for -f/--targets-file runs) prefix the banner with a
+    `[i/N]` progress counter and print a pre-crawl "Scanning ..." line, so on a
+    long list it's clear which target is in-flight during the (silent, up to
+    --timeout) crawl and how far through the list the run is. `use_color`
+    paints those markers for the live terminal only (stripped from the saved
+    transcript -- see _Tee)."""
     host = host_of(url)
+
+    # Pre-crawl progress line (only on -f runs, where index/total are set). The
+    # "=== host ===" banner below is deliberately left byte-for-byte unchanged
+    # and uncolored so the downstream transcript parser that keys off it is
+    # unaffected -- the counter lives on this separate line instead.
+    if index and total:
+        print(paint("[" + str(index) + "/" + str(total) + "] >> Scanning " + url + " ...", ANSI_CYAN, ANSI_BOLD, enabled=use_color))
     print("=== " + host + " ===")
 
     try:
@@ -2067,6 +2165,22 @@ def main(argv=None):
         "timeouts.",
     )
     ap.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue a -f/--targets-file run that was interrupted (graceful Ctrl-C or an "
+        "unexpected crash), skipping targets already finished. Reads the "
+        "'webtech_fingerprint_progress.json' left in --outdir by the interrupted run, re-bundles "
+        "the earlier per-host results with the newly-crawled ones into a single results zip, and "
+        "removes the progress file once the whole list finishes. Only valid with -f.",
+    )
+    ap.add_argument(
+        "--no-color",
+        action="store_true",
+        help="disable ANSI color in the per-target progress indicator. Color is auto-disabled "
+        "when output isn't a TTY or when NO_COLOR is set; the saved transcript is always plain "
+        "text regardless.",
+    )
+    ap.add_argument(
         "--install-browser",
         action="store_true",
         help="download Playwright's Chromium browser and exit -- equivalent to 'python -m "
@@ -2089,6 +2203,14 @@ def main(argv=None):
     if sum(provided) > 1:
         ap.error("provide only one of: a URL, --targets-file, --request-file, --enrich")
 
+    if args.resume and not args.targets_file:
+        ap.error("--resume only applies to a -f/--targets-file run (single-URL, --request-file, and --enrich are single-target)")
+
+    # Decide color once, while sys.stdout is still the real terminal (before the
+    # _Tee wrap below). Honors the NO_COLOR convention and --no-color, and stays
+    # off when output is piped/redirected.
+    use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ and not args.no_color
+
     extra_headers = None
     extra_cookies = None
     request_file_url = None
@@ -2108,6 +2230,10 @@ def main(argv=None):
     check_repo = not args.no_repo_check
     all_rows = []
     written_files = []
+    # True unless a -f run is stopped partway (graceful Ctrl-C). Gates the
+    # finalization: a complete run zips + cleans up as before; an incomplete one
+    # keeps the loose files + progress file so --resume can finish later.
+    run_complete = True
 
     # Everything printed from here down is captured into transcript_buffer
     # (in addition to still printing normally) so the full terminal
@@ -2129,13 +2255,95 @@ def main(argv=None):
                 ap.error("couldn't read targets file " + args.targets_file + ": " + str(e))
             if not targets:
                 ap.error("no targets found in " + args.targets_file)
+
+            settings = {
+                "no_eol": args.no_eol, "no_repo_check": args.no_repo_check,
+                "no_txt": args.no_txt, "no_zip": args.no_zip,
+                "timeout": args.timeout, "proxy": args.proxy,
+            }
+            total = len(targets)
+
+            # Resume: skip targets already finished on the interrupted run, and
+            # re-load their per-host .json (kept on disk by that run) so the
+            # final summary/zip include the earlier work too.
+            completed = set()
+            prior = read_progress(args.outdir)
+            if args.resume:
+                if prior is None:
+                    print("NOTE: --resume was given but no " + PROGRESS_FILENAME + " was found in " + args.outdir + "; running the full list.")
+                else:
+                    if prior.get("targets") != targets:
+                        print("NOTE: the target list differs from the interrupted run; resuming by URL match where it still lines up.")
+                    if prior.get("settings") != settings:
+                        print("WARNING: run settings differ from the interrupted run; continuing with the current settings anyway.")
+                    completed = set(prior.get("completed", []))
+                    reloaded = 0
+                    for url in targets:
+                        if url not in completed:
+                            continue
+                        host = host_of(url)
+                        jpath = os.path.join(args.outdir, host + ".json")
+                        try:
+                            with open(jpath) as f:
+                                data = json.load(f)
+                        except (OSError, ValueError):
+                            print("NOTE: " + jpath + " from the earlier run is missing/unreadable (likely a target that failed, or --no-txt loose files were removed); it won't be in this run's zip.")
+                            continue
+                        written_files.append((jpath, False))
+                        tpath = os.path.join(args.outdir, host + ".txt")
+                        if not args.no_txt and os.path.exists(tpath):
+                            written_files.append((tpath, False))
+                        all_rows.extend(build_summary_rows(host, data))
+                        reloaded += 1
+                    print("Resuming: " + str(len(completed)) + " target(s) already done (" + str(reloaded) + " reloaded), " + str(len([u for u in targets if u not in completed])) + " remaining.")
+            elif prior is not None:
+                print("NOTE: found an interrupted run in " + args.outdir + " (" + str(len(prior.get("completed", []))) + " target(s) done). Starting over -- pass --resume to continue it instead.")
+
+            # Graceful Ctrl-C: the first SIGINT only sets a flag (and prints an
+            # acknowledgement), so the in-flight crawl runs to completion and
+            # the loop stops cleanly before the next target. A second SIGINT
+            # raises KeyboardInterrupt to force-quit immediately. Only installed
+            # for this multi-target branch; the original handler is restored
+            # right after.
+            sig = {"stop": False, "hits": 0}
+
+            def _on_sigint(signum, frame):
+                sig["hits"] += 1
+                if sig["hits"] >= 2:
+                    raise KeyboardInterrupt
+                sig["stop"] = True
+                print(paint("\n[!] Ctrl-C received -- finishing the current target, then stopping gracefully. Press Ctrl-C again to force-quit.", ANSI_YELLOW, ANSI_BOLD, enabled=use_color), flush=True)
+
+            prev_handler = signal.signal(signal.SIGINT, _on_sigint)
             ok = 0
-            for url in targets:
-                data = process_target(url, args.outdir, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, proxy=args.proxy, timeout=args.timeout)
-                if data is not None:
-                    ok += 1
-                    all_rows.extend(build_summary_rows(host_of(url), data))
-            print("\n" + str(ok) + "/" + str(len(targets)) + " targets completed successfully.")
+            try:
+                for i, url in enumerate(targets, 1):
+                    if url in completed:
+                        print(paint("[" + str(i) + "/" + str(total) + "] skipping " + url + " (already done)", ANSI_DIM, enabled=use_color))
+                        continue
+                    data = process_target(url, args.outdir, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, proxy=args.proxy, timeout=args.timeout, index=i, total=total, use_color=use_color)
+                    if data is not None:
+                        ok += 1
+                        all_rows.extend(build_summary_rows(host_of(url), data))
+                    completed.add(url)
+                    write_progress(args.outdir, {
+                        "version": 1,
+                        "targets_file": os.path.abspath(args.targets_file),
+                        "targets": targets,
+                        "completed": sorted(completed),
+                        "settings": settings,
+                    })
+                    if sig["stop"]:
+                        break
+            finally:
+                signal.signal(signal.SIGINT, prev_handler)
+
+            done = len([u for u in targets if u in completed])
+            if sig["stop"] and done < total:
+                run_complete = False
+                print(paint("\nStopped after " + str(done) + "/" + str(total) + " targets. Re-run with --resume to continue the remaining " + str(total - done) + ".", ANSI_YELLOW, ANSI_BOLD, enabled=use_color))
+            else:
+                print("\n" + str(done) + "/" + str(total) + " targets completed (" + str(ok) + " this run produced results).")
         elif args.request_file:
             data = process_target(request_file_url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=args.proxy, method=request_method, body=request_body, timeout=args.timeout)
             if data is not None:
@@ -2171,28 +2379,58 @@ def main(argv=None):
     finally:
         sys.stdout = real_stdout
 
-    if not args.no_zip:
-        transcript_path = os.path.join(args.outdir, "webtech_fingerprint_transcript.txt")
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            f.write(transcript_buffer.getvalue())
+    transcript_path = os.path.join(args.outdir, "webtech_fingerprint_transcript.txt")
 
-        zip_path = os.path.join(args.outdir, "webtech_fingerprint_results.zip")
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(transcript_path, arcname=os.path.basename(transcript_path))
-            for path, _explicit in written_files:
-                if os.path.exists(path):
-                    zf.write(path, arcname=os.path.basename(path))
-        print("Wrote " + transcript_path)
-        print("Wrote " + zip_path)
-
-        # Everything above is now inside the zip -- remove the loose copies
-        # so only webtech_fingerprint_results.zip remains, except any path
-        # the user explicitly pointed at via --json.
-        for path, explicit in written_files:
-            if not explicit and os.path.exists(path):
-                os.remove(path)
+    def _write_cumulative_transcript():
+        """Write the transcript, prepending any transcript left by an earlier
+        interrupted run (kept in --outdir) so a --resume's final transcript
+        covers every run, not just the last one."""
+        prior_text = ""
         if os.path.exists(transcript_path):
-            os.remove(transcript_path)
+            try:
+                with open(transcript_path, encoding="utf-8") as f:
+                    prior_text = f.read()
+            except OSError:
+                prior_text = ""
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            f.write(prior_text + transcript_buffer.getvalue())
+
+    if run_complete:
+        if not args.no_zip:
+            _write_cumulative_transcript()
+
+            zip_path = os.path.join(args.outdir, "webtech_fingerprint_results.zip")
+            seen = set()
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(transcript_path, arcname=os.path.basename(transcript_path))
+                for path, _explicit in written_files:
+                    if path not in seen and os.path.exists(path):
+                        seen.add(path)
+                        zf.write(path, arcname=os.path.basename(path))
+            print("Wrote " + transcript_path)
+            print("Wrote " + zip_path)
+
+            # Everything above is now inside the zip -- remove the loose copies
+            # so only webtech_fingerprint_results.zip remains, except any path
+            # the user explicitly pointed at via --json.
+            for path, explicit in written_files:
+                if not explicit and os.path.exists(path):
+                    os.remove(path)
+            if os.path.exists(transcript_path):
+                os.remove(transcript_path)
+
+        # The run finished -- drop the resume state so a later plain run doesn't
+        # think there's an interrupted run to continue.
+        pp = progress_path(args.outdir)
+        if os.path.exists(pp):
+            os.remove(pp)
+    else:
+        # Stopped partway (only reachable from the -f branch). Preserve
+        # everything --resume needs: the loose per-host files, the progress
+        # file, and a cumulative transcript. Build no zip and delete nothing.
+        _write_cumulative_transcript()
+        print("Wrote " + transcript_path + " (partial)")
+        print("Partial results kept in " + args.outdir + " -- re-run with --resume to finish. Nothing was zipped or deleted.")
 
     return 0
 
