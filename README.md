@@ -161,6 +161,7 @@ Web recon helpers.
   aux-webtech -f targets.txt -o results/
   auxiliary webtech https://target.example.com --no-eol
   aux-webtech https://target.example.com --proxy http://127.0.0.1:8080
+  aux-webtech https://target.example.com --timeout 60000
 
   # Using script directly (no installation)
   python3 web/webtech_fingerprint.py https://target.example.com
@@ -177,6 +178,8 @@ Web recon helpers.
   Note: a WAF/CDN bot-challenge (e.g. Cloudflare Turnstile) can prevent the real page from ever being reached, producing a misleadingly clean "0 libraries detected" for the challenge page instead. This tool applies best-effort anti-detection browser hardening and prints an explicit `WARNING` (plus `"challenge_page"` in the saved JSON) when a known challenge signature is detected — treat those results as unverified.
 
   To inspect this tool's own traffic (e.g. in Burp), use `--proxy http://127.0.0.1:8080` rather than `HTTP_PROXY`/`HTTPS_PROXY` environment variables — Playwright's browser doesn't automatically honor those the way `requests`-based tools do, so setting only the env vars will silently NOT route the browser's navigation through your proxy.
+
+  By default each target gets up to 25s (25000 ms) to fire its initial page-load event before the navigation times out. Use `--timeout <ms>` to change that — raise it for slow SPAs or high-latency targets (e.g. `--timeout 60000`), or pass `--timeout 0` to wait indefinitely. This only bounds the initial navigation; the fixed post-load settle wait and the resource/EOL fetch timeouts are unaffected.
 
 ---
 

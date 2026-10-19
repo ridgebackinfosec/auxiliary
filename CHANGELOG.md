@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-10-19
+
+### Added
+- `web/webtech_fingerprint.py`: new `--timeout <ms>` flag to set the maximum time to wait
+  for a target's initial page-load (browser navigation) event. Defaults to 25000 ms (25s),
+  matching the previous hardcoded value, so existing behavior is unchanged. Raise it for
+  slow SPAs or high-latency targets; `--timeout 0` waits indefinitely (per Playwright).
+  This only bounds the initial navigation — the fixed post-load settle wait and the
+  resource/endoflife.date/GitHub fetch timeouts are unaffected.
+
 ## [1.6.1] - 2026-09-28
 
 ### Fixed

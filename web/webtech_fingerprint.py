@@ -125,6 +125,7 @@ USAGE:
     python3 webtech_fingerprint.py https://target.example.com --no-eol
     python3 webtech_fingerprint.py https://target.example.com --no-repo-check
     python3 webtech_fingerprint.py https://target.example.com --no-zip
+    python3 webtech_fingerprint.py https://target.example.com --timeout 60000
     python3 webtech_fingerprint.py -r captured_request.py -o results/
     python3 webtech_fingerprint.py -r captured_request.curl -o results/
     python3 webtech_fingerprint.py --enrich webtech_fingerprint_results.zip -o results/
@@ -1929,7 +1930,7 @@ def write_target_report(host, data, outdir, json_path=None, write_txt=True, writ
     return json_out
 
 
-def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, check_repo=True, written_files=None, extra_headers=None, extra_cookies=None, proxy=None, method=None, body=None):
+def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, check_repo=True, written_files=None, extra_headers=None, extra_cookies=None, proxy=None, method=None, body=None, timeout=25000):
     """Fingerprint one target, print the "=== host ===" banner + report, and
     (unless disabled) write the per-host .json/.txt files -- this is the
     native equivalent of the bash loop's `echo "=== $host ==="` / `--json
@@ -1940,7 +1941,7 @@ def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, 
     print("=== " + host + " ===")
 
     try:
-        data = fingerprint(url, check_eol=check_eol, check_repo=check_repo, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=proxy, method=method, body=body)
+        data = fingerprint(url, timeout=timeout, check_eol=check_eol, check_repo=check_repo, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=proxy, method=method, body=body)
     except Exception as e:
         msg = str(e)
         print("ERROR fingerprinting " + url + ": " + msg)
@@ -2055,6 +2056,17 @@ def main(argv=None):
         "variables the way requests-based tools do, so this is the only reliable way to do that.",
     )
     ap.add_argument(
+        "--timeout",
+        type=int,
+        default=25000,
+        metavar="MS",
+        help="max time in milliseconds to wait for a target's initial page load (the browser "
+        "navigation / 'load' event); default 25000 (25s). Raise it for slow SPAs or high-latency "
+        "targets that exceed 25s; 0 disables the timeout entirely (wait indefinitely, per "
+        "Playwright). Does not affect the fixed post-load settle wait or the resource/EOL fetch "
+        "timeouts.",
+    )
+    ap.add_argument(
         "--install-browser",
         action="store_true",
         help="download Playwright's Chromium browser and exit -- equivalent to 'python -m "
@@ -2063,6 +2075,9 @@ def main(argv=None):
         "put the 'playwright' command on PATH the way a pip/venv install does.",
     )
     args = ap.parse_args(argv)
+
+    if args.timeout < 0:
+        ap.error("--timeout must be >= 0 (0 disables the timeout)")
 
     if args.install_browser:
         print("Downloading Playwright's Chromium browser...", flush=True)
@@ -2116,13 +2131,13 @@ def main(argv=None):
                 ap.error("no targets found in " + args.targets_file)
             ok = 0
             for url in targets:
-                data = process_target(url, args.outdir, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, proxy=args.proxy)
+                data = process_target(url, args.outdir, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, proxy=args.proxy, timeout=args.timeout)
                 if data is not None:
                     ok += 1
                     all_rows.extend(build_summary_rows(host_of(url), data))
             print("\n" + str(ok) + "/" + str(len(targets)) + " targets completed successfully.")
         elif args.request_file:
-            data = process_target(request_file_url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=args.proxy, method=request_method, body=request_body)
+            data = process_target(request_file_url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=args.proxy, method=request_method, body=request_body, timeout=args.timeout)
             if data is not None:
                 all_rows.extend(build_summary_rows(host_of(request_file_url), data))
         elif args.enrich:
@@ -2134,7 +2149,7 @@ def main(argv=None):
                 all_rows.extend(build_summary_rows(host, data))
             print("\n" + str(len(host_data_pairs)) + " host(s) re-enriched from " + args.enrich + ".")
         else:
-            data = process_target(args.url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, proxy=args.proxy)
+            data = process_target(args.url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, proxy=args.proxy, timeout=args.timeout)
             if data is not None:
                 all_rows.extend(build_summary_rows(host_of(args.url), data))
 
