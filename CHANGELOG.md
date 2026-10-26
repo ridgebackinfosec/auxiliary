@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-10-26
+
+### Changed
+- `web/webtech_fingerprint.py`: the `--match` results list now prints `Host`/`Version`
+  column headers with a separator (matching the `SUMMARY` tables), so the
+  `=== MATCHED: <tech> ===` block is self-explanatory in a screenshot or shared report.
+
 ## [1.8.0] - 2026-10-26
 
 ### Added

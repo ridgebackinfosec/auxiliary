@@ -1993,15 +1993,21 @@ def format_compact_line(index, total, url, ok, detail, use_color=False):
 
 def format_matched_section(term, hits):
     """The end-of-run "=== MATCHED: <term> (N hosts) ===" block for one match
-    term. `hits` is a list of (host, [version strings]); each host gets a line
-    with its detected version(s) joined by ", "."""
+    term. `hits` is a list of (host, [version strings]); each host gets a row
+    with its detected version(s) joined by ", ". Rendered as a labeled
+    Host/Version table (same style as the SUMMARY tables) so the list reads on
+    its own in a screenshot or shared report."""
     lines = ["=== MATCHED: " + term + " (" + str(len(hits)) + " hosts) ==="]
     if not hits:
         lines.append("  (no hosts)")
         return "\n".join(lines)
-    width = max(len(host) for host, _ in hits)
-    for host, versions in hits:
-        lines.append("  " + host.ljust(width) + "  " + ", ".join(versions))
+    rows = [(host, ", ".join(versions)) for host, versions in hits]
+    hw = max([len("Host")] + [len(h) for h, _ in rows])
+    vw = max([len("Version")] + [len(v) for _, v in rows])
+    lines.append("  " + "Host".ljust(hw) + "  " + "Version".ljust(vw))
+    lines.append("  " + "-" * hw + "  " + "-" * vw)
+    for host, version in rows:
+        lines.append("  " + host.ljust(hw) + "  " + version.ljust(vw))
     return "\n".join(lines)
 
 

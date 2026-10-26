@@ -178,9 +178,21 @@ class FormatMatchedSectionTests(unittest.TestCase):
     def test_header_and_rows(self):
         out = wt.format_matched_section("php", [("web01", ["8.1.2"]), ("app", ["7.4.33", "version unknown"])])
         self.assertIn("=== MATCHED: php (2 hosts) ===", out)
+        self.assertIn("Host", out)
+        self.assertIn("Version", out)
         self.assertIn("web01", out)
         self.assertIn("8.1.2", out)
         self.assertIn("7.4.33, version unknown", out)
+
+    def test_header_row_precedes_data(self):
+        out = wt.format_matched_section("php", [("web01", ["8.1.2"])])
+        lines = out.splitlines()
+        # "=== MATCHED ===" title, then the Host/Version header, a dashed
+        # separator, then the data row.
+        self.assertTrue(lines[1].strip().startswith("Host"))
+        self.assertIn("Version", lines[1])
+        self.assertTrue(set(lines[2].strip()) <= {"-", " "})
+        self.assertIn("web01", lines[3])
 
     def test_no_hosts(self):
         out = wt.format_matched_section("php", [])
