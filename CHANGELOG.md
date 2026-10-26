@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-10-26
+
+### Fixed
+- `web/webtech_fingerprint.py`: concurrent (`-t >1`) runs no longer collapse errors to an
+  unreadable truncated line. The full message of every failed target is now listed in an
+  end-of-run `Failures (N)` summary, and a missing Playwright browser (which fails every target
+  identically) fails the run fast with the full error plus the `--install-browser` hint printed
+  once and a non-zero exit, instead of flooding the feed with truncated lines and no guidance.
+  `--match-only` also no longer hides failed hosts.
+
 ## [1.8.1] - 2026-10-26
 
 ### Changed

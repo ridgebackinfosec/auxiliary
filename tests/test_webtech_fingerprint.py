@@ -210,6 +210,18 @@ def _fake_fingerprint_factory(by_host):
     return fake
 
 
+def _raising_fingerprint_factory(errors, by_host=None):
+    """fingerprint() replacement that raises `errors[host]` for listed hosts and
+    returns canned data (from by_host, else empty) for the rest."""
+    by_host = by_host or {}
+    def fake(target_url, **kwargs):
+        host = wt.host_of(target_url)
+        if host in errors:
+            raise RuntimeError(errors[host])
+        return by_host.get(host, _data())
+    return fake
+
+
 class MainIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -347,6 +359,57 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertEqual(sorted(scanned), ["b.local", "c.local"])
         # Clean completion removes the progress sidecar.
         self.assertFalse(os.path.exists(wt.progress_path(self.tmp)))
+
+    def test_missing_browser_fails_fast_with_hint(self):
+        import contextlib
+        import io as _io
+        urls = ["https://a.local", "https://b.local", "https://c.local", "https://d.local"]
+        self._write_targets(urls)
+        pw_err = ("Executable doesn't exist. Please run the following command "
+                  "to download new browsers: playwright install")
+        errors = {wt.host_of(u): pw_err for u in urls}
+        buf = _io.StringIO()
+        with mock.patch.object(wt, "fingerprint", _raising_fingerprint_factory(errors)):
+            with contextlib.redirect_stdout(buf):
+                rc = wt.main(self._base_args("--threads", "3"))
+        out = buf.getvalue()
+        self.assertEqual(rc, 1)
+        self.assertIn("--install-browser", out)
+
+    def test_failures_summary_shows_full_error(self):
+        import contextlib
+        import io as _io
+        urls = ["https://ok1.local", "https://broken.local", "https://ok2.local"]
+        self._write_targets(urls)
+        by_host = {"ok1.local": _data(server_components=[_server("nginx", "1.18.0")]),
+                   "ok2.local": _data(server_components=[_server("nginx", "1.18.0")])}
+        errors = {"broken.local": "net::ERR_CONNECTION_REFUSED at https://broken.local"}
+        buf = _io.StringIO()
+        with mock.patch.object(wt, "fingerprint", _raising_fingerprint_factory(errors, by_host)):
+            with contextlib.redirect_stdout(buf):
+                rc = wt.main(self._base_args("--threads", "3"))
+        out = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("Failures (1", out)
+        self.assertIn("net::ERR_CONNECTION_REFUSED", out)
+        self.assertIn("broken.local", out)
+
+    def test_match_only_still_shows_failures(self):
+        import contextlib
+        import io as _io
+        urls = ["https://php1.local", "https://plain.local", "https://broken.local"]
+        self._write_targets(urls)
+        by_host = {"php1.local": _data(server_components=[_server("PHP", "8.1.2")]),
+                   "plain.local": _data(server_components=[_server("nginx", "1.18.0")])}
+        errors = {"broken.local": "net::ERR_NAME_NOT_RESOLVED"}
+        buf = _io.StringIO()
+        with mock.patch.object(wt, "fingerprint", _raising_fingerprint_factory(errors, by_host)):
+            with contextlib.redirect_stdout(buf):
+                rc = wt.main(self._base_args("--threads", "3", "--match", "php", "--match-only"))
+        out = buf.getvalue()
+        self.assertEqual(rc, 0)
+        # The failed host is never silently dropped by --match-only.
+        self.assertIn("broken.local", out)
 
     def test_serial_run_prints_full_report(self):
         urls = ["https://a.local", "https://b.local"]

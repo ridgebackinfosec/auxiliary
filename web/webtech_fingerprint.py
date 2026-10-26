@@ -2193,7 +2193,10 @@ def emit_result(result, outdir, json_path=None, write_txt=True, written_files=No
     --resume won't re-crawl it."""
     host = result["host"]
     matches = match_detections(result["data"], match_terms) if (result["ok"] and match_terms) else []
-    suppressed = bool(match_only) and not matches
+    # Only a *successful* non-matching host is suppressed by --match-only; a
+    # failed host has no data to match on, and silently dropping it would hide
+    # scan errors, so failures always emit (and are summarized by the caller).
+    suppressed = bool(match_only) and result["ok"] and not matches
     if suppressed:
         return {"matches": matches, "suppressed": True}
 
@@ -2574,6 +2577,8 @@ def main(argv=None):
             compact = args.threads > 1
             lock = threading.Lock()
             ok = 0
+            failures = []        # (host, full error message) for the end-of-run summary
+            fatal_hint = False   # missing-browser precondition: fail the whole run fast
             pending = iter([(i, url) for i, url in enumerate(targets, 1) if url not in completed])
             in_flight = {}
             forced = False
@@ -2622,10 +2627,25 @@ def main(argv=None):
                             if result["data"] is not None and not outcome["suppressed"]:
                                 ok += 1
                                 all_rows.extend(build_summary_rows(result["host"], result["data"]))
+                            elif not result["ok"]:
+                                failures.append((result["host"], result["error"] or ""))
+                                # The browser not being installed fails every
+                                # target identically -- surface the full error +
+                                # install hint once and stop launching new work,
+                                # rather than flooding the feed with truncated
+                                # FAIL lines and no guidance.
+                                if result["install_hint"] and not fatal_hint:
+                                    fatal_hint = True
+                                    print(paint("\n[!] " + (result["error"] or ""), ANSI_RED, ANSI_BOLD, enabled=use_color))
+                                    print(paint(
+                                        "Hint: run 'aux-webtech --install-browser' (or 'auxiliary webtech "
+                                        "--install-browser') to download it -- this works correctly under a pipx "
+                                        "install too, unlike the plain 'playwright install' command Playwright suggests.",
+                                        ANSI_YELLOW, enabled=use_color))
                             record_matches(result["host"], outcome["matches"])
                             completed.add(url)
                             _write_progress_now()
-                    if not sig["stop"]:
+                    if not sig["stop"] and not fatal_hint:
                         for _ in range(len(done_futs)):
                             if not _submit_next(executor):
                                 break
@@ -2644,12 +2664,27 @@ def main(argv=None):
                 os._exit(130)
             executor.shutdown(wait=True)
 
+            if fatal_hint:
+                # Missing browser -- nothing succeeded and every remaining target
+                # would fail the same way, so there's nothing to zip or resume.
+                print(paint("\nAborting -- the browser isn't installed, so every target fails the same way. Install it, then re-run.", ANSI_RED, ANSI_BOLD, enabled=use_color))
+                return 1
+
             done = len([u for u in targets if u in completed])
             if sig["stop"] and done < total:
                 run_complete = False
                 print(paint("\nStopped after " + str(done) + "/" + str(total) + " targets. Re-run with --resume to continue the remaining " + str(total - done) + ".", ANSI_YELLOW, ANSI_BOLD, enabled=use_color))
             else:
                 print("\n" + str(done) + "/" + str(total) + " targets completed (" + str(ok) + " this run produced results).")
+
+            # On a concurrent run the per-host error only reaches the transcript
+            # and the feed line is truncated, so list the full messages here.
+            if compact and failures:
+                print("\nFailures (" + str(len(failures)) + "):")
+                fw = max(len(h) for h, _ in failures)
+                for host, err in failures:
+                    flat = " ".join((err or "").split())
+                    print("  " + host.ljust(fw) + "  " + flat)
         elif args.request_file:
             data = process_target(request_file_url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=args.proxy, method=request_method, body=request_body, timeout=args.timeout, match_terms=match_terms, match_only=args.match_only)
             if data is not None:
