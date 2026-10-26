@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-26
+
+### Added
+- `web/webtech_fingerprint.py`: concurrent multi-target scanning. A `-f/--targets-file` run now
+  scans several targets at once via the new `--threads/-t N` flag (default 5); each worker thread
+  drives its own headless browser, so N is roughly the peak browser count. Only applies to `-f`;
+  single-URL/`-r`/`--enrich` stay single-target. At `N > 1` the per-target reports are replaced on
+  screen by a compact one-line-per-host feed printed as each host finishes (out of order), e.g.
+  `[ 4/20] done  https://app   PHP 7.4.33, Apache/2.4.41` / `[ 3/20] FAIL  https://web03  timeout`;
+  the full reports still land in the per-host `.json`/`.txt` files and in the saved transcript, so
+  the downstream analysis parser is unaffected. `--threads 1` keeps the original inline
+  full-report output. Graceful Ctrl-C now stops submitting new targets and lets the in-flight ones
+  finish (progress is saved as each resolves, so `--resume` works unchanged); a second Ctrl-C
+  force-quits.
+- `web/webtech_fingerprint.py`: `--match TECH` tech-hunting filter. Case-insensitive substring
+  match on the detected technology name, across libraries, server components, and cookie
+  fingerprints; after the run it prints a `=== MATCHED: <tech> (N hosts) ===` list of the matching
+  hosts with their detected version (or `version unknown` for a presence-only hit such as a
+  `PHPSESSID` cookie) — e.g. sweep a scope for `php` to find where to patch a fresh advisory.
+  Repeatable and comma-separated: `--match php,apache --match jquery`. The companion `--match-only`
+  suppresses non-matching hosts from the console feed and skips writing their per-host files, while
+  still recording them as completed so `--resume` won't re-crawl them. Note: server-component
+  matches rely on the endoflife lookup, so don't combine a server-tech match with `--no-eol`.
+
 ## [1.7.0] - 2026-10-19
 
 ### Added

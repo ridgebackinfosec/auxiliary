@@ -209,6 +209,7 @@ still out of scope (a follow-up enhancement, e.g. via retire.js's DB).
 
 import argparse
 import ast
+import concurrent.futures
 import glob
 import io
 import json
@@ -218,6 +219,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import warnings
 import zipfile
 from urllib.parse import urlencode, urljoin, urlparse
@@ -1897,6 +1899,113 @@ def read_targets_file(path):
 
 
 # ---------------------------------------------------------------------------
+# Tech-match filter (--match/--match-only) -- pure helpers so a scope can be
+# swept for a specific technology (e.g. "which hosts run PHP?") for quick
+# triage against a fresh advisory. Matching is case-insensitive substring over
+# the detected tech *name*, across libraries, server components, and cookie
+# fingerprints; the version is surfaced when it was detected (headers, JS
+# globals) and reported "version unknown" when a hit is presence-only (e.g. a
+# PHPSESSID cookie proves PHP is there but carries no version).
+# ---------------------------------------------------------------------------
+def normalize_match_terms(raw):
+    """Flatten the repeatable/comma-separated --match values into an ordered,
+    de-duplicated, lowercased term list. `raw` is argparse's append list (or
+    None). `--match php,apache --match JQuery` -> ["php", "apache", "jquery"]."""
+    terms = []
+    for item in raw or []:
+        for frag in item.split(","):
+            frag = frag.strip().lower()
+            if frag and frag not in terms:
+                terms.append(frag)
+    return terms
+
+
+def match_detections(data, terms):
+    """Return the detections in one host's result dict whose tech name matches
+    any of `terms` (already lowercased). Each entry is {"tech", "version"};
+    cookie-only hits carry version None. Scanned in a stable order -- server
+    components, then libraries, then cookie fingerprints -- and de-duplicated
+    on (tech, version)."""
+    if not terms:
+        return []
+    hits = []
+    seen = set()
+
+    def consider(name, version):
+        if not name:
+            return
+        low = name.lower()
+        if any(t in low for t in terms):
+            key = (name, version)
+            if key not in seen:
+                seen.add(key)
+                hits.append({"tech": name, "version": version})
+
+    for comp in data.get("server_components", []):
+        consider(comp.get("name"), comp.get("version"))
+    for lib in data.get("libraries", []):
+        consider(lib.get("name"), lib.get("version"))
+    for cookie in data.get("cookies", []):
+        consider(cookie.get("technology"), None)
+    return hits
+
+
+def format_detected_version(entry):
+    """A match entry's version string, or "version unknown" for a
+    presence-only (e.g. cookie) hit."""
+    return entry["version"] if entry.get("version") else "version unknown"
+
+
+def summarize_detections(data, max_items=4):
+    """Compact one-line tail for the concurrent live feed, e.g.
+    "nginx 1.18.0, jQuery 3.6.0". Server components come first, then
+    libraries; capped at `max_items` with a " +K more" suffix. Returns
+    "no components detected" when there's nothing to show."""
+    parts = []
+    for comp in data.get("server_components", []):
+        name, version = comp.get("name"), comp.get("version")
+        parts.append(name + " " + version if version else name)
+    for lib in data.get("libraries", []):
+        name, version = lib.get("name"), lib.get("version")
+        parts.append(name + " " + version if version else name)
+    if not parts:
+        return "no components detected"
+    if len(parts) > max_items:
+        extra = len(parts) - max_items
+        return ", ".join(parts[:max_items]) + " +" + str(extra) + " more"
+    return ", ".join(parts)
+
+
+def format_compact_line(index, total, url, ok, detail, use_color=False):
+    """One line of the concurrent live feed, printed as each host finishes
+    (out of order): "[ 4/20] done  https://app   PHP 8.1.2". The index is
+    right-justified to the width of `total` so the column stays aligned; the
+    done/FAIL word is colored for the live terminal only (stripped from the
+    transcript by _Tee)."""
+    width = len(str(total))
+    counter = "[" + str(index).rjust(width) + "/" + str(total) + "]"
+    if ok:
+        status = paint("done", ANSI_GREEN, enabled=use_color)
+    else:
+        status = paint("FAIL", ANSI_RED, enabled=use_color)
+    return counter + " " + status + "  " + url + "   " + detail
+
+
+def format_matched_section(term, hits):
+    """The end-of-run "=== MATCHED: <term> (N hosts) ===" block for one match
+    term. `hits` is a list of (host, [version strings]); each host gets a line
+    with its detected version(s) joined by ", "."""
+    lines = ["=== MATCHED: " + term + " (" + str(len(hits)) + " hosts) ==="]
+    if not hits:
+        lines.append("  (no hosts)")
+        return "\n".join(lines)
+    width = max(len(host) for host, _ in hits)
+    for host, versions in hits:
+        lines.append("  " + host.ljust(width) + "  " + ", ".join(versions))
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Terminal color for the live per-target progress indicator. Color is applied
 # ONLY to the real terminal stream -- it is stripped from the captured
 # transcript (see _Tee below), so webtech_fingerprint_transcript.txt / the
@@ -1905,6 +2014,8 @@ def read_targets_file(path):
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 ANSI_CYAN = "\x1b[36m"
 ANSI_YELLOW = "\x1b[33m"
+ANSI_GREEN = "\x1b[32m"
+ANSI_RED = "\x1b[31m"
 ANSI_BOLD = "\x1b[1m"
 ANSI_DIM = "\x1b[2m"
 ANSI_RESET = "\x1b[0m"
@@ -1981,25 +2092,29 @@ def read_progress(outdir):
         return None
 
 
-def write_target_report(host, data, outdir, json_path=None, write_txt=True, written_files=None):
-    """Print the report body for an already-fingerprinted (or re-enriched)
-    host and (unless disabled) write the per-host .json/.txt files -- this is
-    the native equivalent of the bash loop's `--json "${host}.json"` / `tee
-    "${host}.txt"`. Does NOT print the "=== host ===" banner -- callers print
-    that themselves before they have `data` in hand, so a target that fails
-    before this point still gets its banner in the transcript. If
-    `written_files` is passed a list, every .json/.txt path actually written
-    is appended as a `(path, is_explicit)` tuple -- `is_explicit` is True only
-    for a caller-supplied `json_path` (an explicit --json), so main() knows
-    which files to leave on disk instead of deleting after zipping (see
-    Change 3 / the zip-only cleanup step)."""
+def write_target_report(host, data, outdir, json_path=None, write_txt=True, written_files=None, print_report=True):
+    """Write the per-host .json/.txt files for an already-fingerprinted (or
+    re-enriched) host -- the native equivalent of the bash loop's `--json
+    "${host}.json"` / `tee "${host}.txt"`. When `print_report` is True (the
+    serial default) the report body and the "Wrote ..." lines are also printed;
+    the concurrent driver passes `print_report=False` so files are written
+    silently while the live feed stays a compact one-line-per-host view (the
+    full report still reaches the transcript -- see emit_result). Does NOT
+    print the "=== host ===" banner -- callers handle that. If `written_files`
+    is passed a list, every .json/.txt path actually written is appended as a
+    `(path, is_explicit)` tuple -- `is_explicit` is True only for a
+    caller-supplied `json_path` (an explicit --json), so main() knows which
+    files to leave on disk instead of deleting after zipping (see Change 3 /
+    the zip-only cleanup step)."""
     report_text = build_report_text(data)
-    print(report_text)
+    if print_report:
+        print(report_text)
 
     json_out = json_path or os.path.join(outdir, host + ".json")
     with open(json_out, "w") as f:
         json.dump(data, f, indent=2)
-    print("\nWrote " + json_out)
+    if print_report:
+        print("\nWrote " + json_out)
     if written_files is not None:
         written_files.append((json_out, json_path is not None))
 
@@ -2007,52 +2122,114 @@ def write_target_report(host, data, outdir, json_path=None, write_txt=True, writ
         txt_out = os.path.join(outdir, host + ".txt")
         with open(txt_out, "w") as f:
             f.write(report_text + "\n")
-        print("Wrote " + txt_out)
+        if print_report:
+            print("Wrote " + txt_out)
         if written_files is not None:
             written_files.append((txt_out, False))
 
     return json_out
 
 
-def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, check_repo=True, written_files=None, extra_headers=None, extra_cookies=None, proxy=None, method=None, body=None, timeout=25000, index=None, total=None, use_color=False):
-    """Fingerprint one target, print the "=== host ===" banner + report, and
-    (unless disabled) write the per-host .json/.txt files -- this is the
-    native equivalent of the bash loop's `echo "=== $host ==="` / `--json
-    "${host}.json"` / `tee "${host}.txt"`. `extra_headers`/`extra_cookies`/
-    `method`/`body` (from -r) run this target as an authenticated user --
-    see fingerprint().
+def _error_detail(msg):
+    """Short status word for the compact live feed when a crawl fails:
+    "timeout" for a navigation timeout, otherwise the first line of the error
+    trimmed to fit on one line."""
+    if "timeout" in msg.lower():
+        return "timeout"
+    first = msg.splitlines()[0] if msg else "error"
+    return first if len(first) <= 60 else first[:57] + "..."
 
-    `index`/`total` (set for -f/--targets-file runs) prefix the banner with a
-    `[i/N]` progress counter and print a pre-crawl "Scanning ..." line, so on a
-    long list it's clear which target is in-flight during the (silent, up to
-    --timeout) crawl and how far through the list the run is. `use_color`
-    paints those markers for the live terminal only (stripped from the saved
-    transcript -- see _Tee)."""
+
+def scan_target(url, timeout=25000, check_eol=True, check_repo=True, extra_headers=None, extra_cookies=None, proxy=None, method=None, body=None):
+    """Fingerprint one target and return a result record -- the worker-thread
+    half of a scan. Pure with respect to shared state: it does NO printing and
+    NO file I/O, so N of these can run concurrently (each fingerprint() opens
+    its own Playwright/browser). `extra_headers`/`extra_cookies`/`method`/`body`
+    (from -r) run the target as an authenticated user -- see fingerprint().
+
+    Returns {url, host, ok, error, install_hint, data, report_text, detail}:
+    on success `data` is the fingerprint() dict, `report_text` its rendered
+    report and `detail` a compact tech summary; on failure `data`/`report_text`
+    are None, `error` the message, and `detail` a short status word."""
     host = host_of(url)
-
-    # Pre-crawl progress line (only on -f runs, where index/total are set). The
-    # "=== host ===" banner below is deliberately left byte-for-byte unchanged
-    # and uncolored so the downstream transcript parser that keys off it is
-    # unaffected -- the counter lives on this separate line instead.
-    if index and total:
-        print(paint("[" + str(index) + "/" + str(total) + "] >> Scanning " + url + " ...", ANSI_CYAN, ANSI_BOLD, enabled=use_color))
-    print("=== " + host + " ===")
-
     try:
         data = fingerprint(url, timeout=timeout, check_eol=check_eol, check_repo=check_repo, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=proxy, method=method, body=body)
     except Exception as e:
         msg = str(e)
-        print("ERROR fingerprinting " + url + ": " + msg)
-        if "playwright install" in msg.lower():
+        return {
+            "url": url, "host": host, "ok": False, "error": msg,
+            "install_hint": "playwright install" in msg.lower(),
+            "data": None, "report_text": None, "detail": _error_detail(msg),
+        }
+    return {
+        "url": url, "host": host, "ok": True, "error": None,
+        "install_hint": False, "data": data,
+        "report_text": build_report_text(data),
+        "detail": summarize_detections(data),
+    }
+
+
+def emit_result(result, outdir, json_path=None, write_txt=True, written_files=None, match_terms=(), match_only=False, compact=False, index=None, total=None, use_color=False, transcript_buffer=None):
+    """Print one scan result and (unless disabled/suppressed) write its per-host
+    files -- the main-thread half of a scan, run under the driver's lock so
+    output never interleaves. Returns {matches, suppressed}.
+
+    `compact=False` (serial): print the "=== host ===" banner then the full
+    report (or the ERROR line), exactly as before. `compact=True` (concurrent):
+    print a single compact [i/N] done/FAIL line to the live terminal, and write
+    the banner + full report into `transcript_buffer` only -- so the screen
+    stays a scannable feed while the saved transcript still carries every full
+    report for the downstream analysis parser that keys off the banner.
+
+    With `--match`, matching detections are returned for the end-of-run MATCHED
+    list. With `--match-only`, a non-matching host is `suppressed`: no banner,
+    no report, no files -- but the caller still records it as completed so a
+    --resume won't re-crawl it."""
+    host = result["host"]
+    matches = match_detections(result["data"], match_terms) if (result["ok"] and match_terms) else []
+    suppressed = bool(match_only) and not matches
+    if suppressed:
+        return {"matches": matches, "suppressed": True}
+
+    if compact:
+        print(format_compact_line(index, total, result["url"], result["ok"], result["detail"], use_color=use_color))
+        if transcript_buffer is not None:
+            block = "=== " + host + " ===\n"
+            if result["ok"]:
+                block += result["report_text"] + "\n"
+            else:
+                block += "ERROR fingerprinting " + result["url"] + ": " + (result["error"] or "") + "\n"
+            transcript_buffer.write(block)
+        if result["ok"]:
+            write_target_report(host, result["data"], outdir, json_path=json_path, write_txt=write_txt, written_files=written_files, print_report=False)
+        return {"matches": matches, "suppressed": False}
+
+    # Serial / inline: byte-for-byte as the pre-concurrency code printed it.
+    print("=== " + host + " ===")
+    if result["ok"]:
+        write_target_report(host, result["data"], outdir, json_path=json_path, write_txt=write_txt, written_files=written_files, print_report=True)
+    else:
+        print("ERROR fingerprinting " + result["url"] + ": " + (result["error"] or ""))
+        if result["install_hint"]:
             print(
                 "Hint: run 'aux-webtech --install-browser' (or 'auxiliary webtech "
                 "--install-browser') to download it -- this works correctly under a pipx "
                 "install too, unlike the plain 'playwright install' command Playwright suggests."
             )
-        return None
+    return {"matches": matches, "suppressed": False}
 
-    write_target_report(host, data, outdir, json_path=json_path, write_txt=write_txt, written_files=written_files)
-    return data
+
+def process_target(url, outdir, json_path=None, write_txt=True, check_eol=True, check_repo=True, written_files=None, extra_headers=None, extra_cookies=None, proxy=None, method=None, body=None, timeout=25000, match_terms=(), match_only=False, use_color=False):
+    """Serial scan of one target: the native equivalent of the bash loop's
+    `echo "=== $host ==="` / `--json "${host}.json"` / `tee "${host}.txt"`.
+    A thin wrapper over scan_target + emit_result(compact=False) kept for the
+    single-URL / -r / --enrich branches. Returns the fingerprint() result dict
+    (or None on failure / when suppressed by --match-only)."""
+    result = scan_target(url, timeout=timeout, check_eol=check_eol, check_repo=check_repo, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=proxy, method=method, body=body)
+    outcome = emit_result(result, outdir, json_path=json_path, write_txt=write_txt, written_files=written_files, match_terms=match_terms, match_only=match_only, compact=False, use_color=use_color)
+    if outcome["suppressed"]:
+        return None
+    return result["data"]
 
 
 def reenrich_data(data, check_eol=True, check_repo=True):
@@ -2165,6 +2342,39 @@ def main(argv=None):
         "timeouts.",
     )
     ap.add_argument(
+        "-t",
+        "--threads",
+        type=int,
+        default=5,
+        metavar="N",
+        help="number of targets to scan at once on a -f/--targets-file run (default 5). Each "
+        "worker thread drives its own headless browser, so N is also roughly the peak browser "
+        "count -- raise it for a large scope on a beefy host, lower it (or use 1) to go easy on "
+        "memory or a fragile target. Only applies to -f; single-URL/-r/--enrich are always one "
+        "target. At N>1 the per-target reports are replaced on screen by a compact "
+        "one-line-per-host feed (full reports still land in the per-host files and the saved "
+        "transcript).",
+    )
+    ap.add_argument(
+        "--match",
+        action="append",
+        metavar="TECH",
+        help="highlight hosts running a given technology (case-insensitive substring match on the "
+        "detected tech name, across libraries, server components, and cookie fingerprints). After "
+        "the run, prints a 'MATCHED: <tech>' list of the hosts (with detected version, or 'version "
+        "unknown' for a presence-only hit like a PHPSESSID cookie) -- e.g. 'which hosts run PHP?' "
+        "for triage against a fresh advisory. Repeatable and comma-separated: --match php,apache "
+        "--match jquery. NOTE: server-component matches need the endoflife lookup, so don't combine "
+        "a server-tech match with --no-eol.",
+    )
+    ap.add_argument(
+        "--match-only",
+        action="store_true",
+        help="with --match, suppress non-matching hosts from the console feed and skip writing their "
+        "per-host files -- only hosts running a matched technology are reported. Matching hosts are "
+        "still fully scanned and (on a -f run) recorded as completed so --resume won't re-crawl them.",
+    )
+    ap.add_argument(
         "--resume",
         action="store_true",
         help="continue a -f/--targets-file run that was interrupted (graceful Ctrl-C or an "
@@ -2206,6 +2416,15 @@ def main(argv=None):
     if args.resume and not args.targets_file:
         ap.error("--resume only applies to a -f/--targets-file run (single-URL, --request-file, and --enrich are single-target)")
 
+    if args.threads < 1:
+        ap.error("--threads must be >= 1")
+    if args.threads != 5 and not args.targets_file:
+        ap.error("--threads only applies to a -f/--targets-file run (single-URL, --request-file, and --enrich are single-target)")
+
+    match_terms = normalize_match_terms(args.match)
+    if args.match_only and not match_terms:
+        ap.error("--match-only requires at least one --match TECH")
+
     # Decide color once, while sys.stdout is still the real terminal (before the
     # _Tee wrap below). Honors the NO_COLOR convention and --no-color, and stays
     # off when output is piped/redirected.
@@ -2230,6 +2449,22 @@ def main(argv=None):
     check_repo = not args.no_repo_check
     all_rows = []
     written_files = []
+    # --match bookkeeping: term -> list of (host, [detected version strings]),
+    # rendered into the end-of-run "=== MATCHED: <term> ===" sections.
+    matched_by_term = {t: [] for t in match_terms}
+
+    def record_matches(host, matches):
+        """Fold one host's matched detections into matched_by_term -- one line
+        per (term, host) with that term's detected version(s), de-duplicated."""
+        for term in match_terms:
+            versions = []
+            for m in matches:
+                if term in m["tech"].lower():
+                    v = format_detected_version(m)
+                    if v not in versions:
+                        versions.append(v)
+            if versions:
+                matched_by_term[term].append((host, versions))
     # True unless a -f run is stopped partway (graceful Ctrl-C). Gates the
     # finalization: a complete run zips + cleans up as before; an incomplete one
     # keeps the loose files + progress file so --resume can finish later.
@@ -2260,6 +2495,8 @@ def main(argv=None):
                 "no_eol": args.no_eol, "no_repo_check": args.no_repo_check,
                 "no_txt": args.no_txt, "no_zip": args.no_zip,
                 "timeout": args.timeout, "proxy": args.proxy,
+                "threads": args.threads,
+                "match": sorted(match_terms), "match_only": args.match_only,
             }
             total = len(targets)
 
@@ -2300,11 +2537,11 @@ def main(argv=None):
                 print("NOTE: found an interrupted run in " + args.outdir + " (" + str(len(prior.get("completed", []))) + " target(s) done). Starting over -- pass --resume to continue it instead.")
 
             # Graceful Ctrl-C: the first SIGINT only sets a flag (and prints an
-            # acknowledgement), so the in-flight crawl runs to completion and
-            # the loop stops cleanly before the next target. A second SIGINT
-            # raises KeyboardInterrupt to force-quit immediately. Only installed
-            # for this multi-target branch; the original handler is restored
-            # right after.
+            # acknowledgement), so the driver stops submitting NEW targets but
+            # lets the in-flight ones (up to --threads) finish and record
+            # their progress. A second SIGINT raises KeyboardInterrupt to
+            # force-quit immediately. Only installed for this multi-target
+            # branch; the original handler is restored right after.
             sig = {"stop": False, "hits": 0}
 
             def _on_sigint(signum, frame):
@@ -2312,31 +2549,94 @@ def main(argv=None):
                 if sig["hits"] >= 2:
                     raise KeyboardInterrupt
                 sig["stop"] = True
-                print(paint("\n[!] Ctrl-C received -- finishing the current target, then stopping gracefully. Press Ctrl-C again to force-quit.", ANSI_YELLOW, ANSI_BOLD, enabled=use_color), flush=True)
+                print(paint("\n[!] Ctrl-C received -- finishing the in-flight targets, then stopping gracefully. Press Ctrl-C again to force-quit.", ANSI_YELLOW, ANSI_BOLD, enabled=use_color), flush=True)
 
             prev_handler = signal.signal(signal.SIGINT, _on_sigint)
+
+            # Resume: announce the already-finished targets we're skipping.
+            for i, url in enumerate(targets, 1):
+                if url in completed:
+                    print(paint("[" + str(i) + "/" + str(total) + "] skipping " + url + " (already done)", ANSI_DIM, enabled=use_color))
+
+            # Concurrent driver. Each target runs scan_target() in its own
+            # worker thread (its own Playwright/browser); results are emitted on
+            # this main thread under `lock`, in completion order, so console,
+            # file, and progress writes never interleave. `compact` (N>1)
+            # switches emit to the one-line-per-host feed. Bounded submission
+            # (never more than N queued) means the first Ctrl-C can stop new
+            # work simply by not refilling -- there's no backlog to cancel.
+            compact = args.threads > 1
+            lock = threading.Lock()
             ok = 0
+            pending = iter([(i, url) for i, url in enumerate(targets, 1) if url not in completed])
+            in_flight = {}
+            forced = False
+
+            def _write_progress_now():
+                write_progress(args.outdir, {
+                    "version": 1,
+                    "targets_file": os.path.abspath(args.targets_file),
+                    "targets": targets,
+                    "completed": sorted(completed),
+                    "settings": settings,
+                })
+
+            def _submit_next(executor):
+                try:
+                    index, url = next(pending)
+                except StopIteration:
+                    return False
+                # Serial mode keeps the 1.7.0 pre-crawl "Scanning ..." line; in
+                # compact mode it would interleave across N workers, so the
+                # compact completion line stands in for it instead.
+                if not compact:
+                    print(paint("[" + str(index) + "/" + str(total) + "] >> Scanning " + url + " ...", ANSI_CYAN, ANSI_BOLD, enabled=use_color))
+                fut = executor.submit(scan_target, url, timeout=args.timeout, check_eol=check_eol, check_repo=check_repo, proxy=args.proxy)
+                in_flight[fut] = (index, url)
+                return True
+
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=args.threads)
             try:
-                for i, url in enumerate(targets, 1):
-                    if url in completed:
-                        print(paint("[" + str(i) + "/" + str(total) + "] skipping " + url + " (already done)", ANSI_DIM, enabled=use_color))
-                        continue
-                    data = process_target(url, args.outdir, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, proxy=args.proxy, timeout=args.timeout, index=i, total=total, use_color=use_color)
-                    if data is not None:
-                        ok += 1
-                        all_rows.extend(build_summary_rows(host_of(url), data))
-                    completed.add(url)
-                    write_progress(args.outdir, {
-                        "version": 1,
-                        "targets_file": os.path.abspath(args.targets_file),
-                        "targets": targets,
-                        "completed": sorted(completed),
-                        "settings": settings,
-                    })
-                    if sig["stop"]:
+                for _ in range(args.threads):
+                    if not _submit_next(executor):
                         break
+                while in_flight:
+                    done_futs, _ = concurrent.futures.wait(in_flight, return_when=concurrent.futures.FIRST_COMPLETED)
+                    for fut in done_futs:
+                        index, url = in_flight.pop(fut)
+                        result = fut.result()
+                        with lock:
+                            outcome = emit_result(
+                                result, args.outdir, write_txt=not args.no_txt,
+                                written_files=written_files, match_terms=match_terms,
+                                match_only=args.match_only, compact=compact,
+                                index=index, total=total, use_color=use_color,
+                                transcript_buffer=transcript_buffer,
+                            )
+                            if result["data"] is not None and not outcome["suppressed"]:
+                                ok += 1
+                                all_rows.extend(build_summary_rows(result["host"], result["data"]))
+                            record_matches(result["host"], outcome["matches"])
+                            completed.add(url)
+                            _write_progress_now()
+                    if not sig["stop"]:
+                        for _ in range(len(done_futs)):
+                            if not _submit_next(executor):
+                                break
+            except KeyboardInterrupt:
+                forced = True
+                print(paint("\n[!] Force-quit -- abandoning the in-flight targets. Progress was saved; re-run with --resume to finish.", ANSI_YELLOW, ANSI_BOLD, enabled=use_color), flush=True)
             finally:
                 signal.signal(signal.SIGINT, prev_handler)
+
+            if forced:
+                # Don't block on executor.__exit__ joining the ~N still-running
+                # crawl threads; the progress file (written under the lock as
+                # each target finished) already reflects exactly what completed.
+                executor.shutdown(wait=False)
+                sys.stdout = real_stdout
+                os._exit(130)
+            executor.shutdown(wait=True)
 
             done = len([u for u in targets if u in completed])
             if sig["stop"] and done < total:
@@ -2345,9 +2645,10 @@ def main(argv=None):
             else:
                 print("\n" + str(done) + "/" + str(total) + " targets completed (" + str(ok) + " this run produced results).")
         elif args.request_file:
-            data = process_target(request_file_url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=args.proxy, method=request_method, body=request_body, timeout=args.timeout)
+            data = process_target(request_file_url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, extra_headers=extra_headers, extra_cookies=extra_cookies, proxy=args.proxy, method=request_method, body=request_body, timeout=args.timeout, match_terms=match_terms, match_only=args.match_only)
             if data is not None:
                 all_rows.extend(build_summary_rows(host_of(request_file_url), data))
+                record_matches(host_of(request_file_url), match_detections(data, match_terms))
         elif args.enrich:
             try:
                 host_data_pairs = run_enrich(args.enrich, args.outdir, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files)
@@ -2357,9 +2658,10 @@ def main(argv=None):
                 all_rows.extend(build_summary_rows(host, data))
             print("\n" + str(len(host_data_pairs)) + " host(s) re-enriched from " + args.enrich + ".")
         else:
-            data = process_target(args.url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, proxy=args.proxy, timeout=args.timeout)
+            data = process_target(args.url, args.outdir, json_path=args.json, write_txt=not args.no_txt, check_eol=check_eol, check_repo=check_repo, written_files=written_files, proxy=args.proxy, timeout=args.timeout, match_terms=match_terms, match_only=args.match_only)
             if data is not None:
                 all_rows.extend(build_summary_rows(host_of(args.url), data))
+                record_matches(host_of(args.url), match_detections(data, match_terms))
 
         if all_rows:
             # Split into the same two groups the downstream report-writing
@@ -2376,6 +2678,13 @@ def main(argv=None):
             print(format_summary_table(confirmed_rows))
             print("\nVersion Status NOT Confirmed")
             print(format_summary_table(unconfirmed_rows))
+
+        # --match triage lists: one "=== MATCHED: <term> ===" block per term,
+        # naming the hosts running that technology (with detected version).
+        if match_terms:
+            print("")
+            for term in match_terms:
+                print(format_matched_section(term, matched_by_term[term]))
     finally:
         sys.stdout = real_stdout
 

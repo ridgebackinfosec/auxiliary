@@ -163,6 +163,9 @@ Web recon helpers.
   aux-webtech https://target.example.com --proxy http://127.0.0.1:8080
   aux-webtech https://target.example.com --timeout 60000
   aux-webtech -f targets.txt -o results/ --resume
+  aux-webtech -f targets.txt -o results/ --threads 10            # scan 10 at once (-t 10)
+  aux-webtech -f targets.txt -o results/ --match php,apache      # triage: who runs PHP/Apache?
+  aux-webtech -f targets.txt -o results/ --match wordpress --match-only
 
   # Using script directly (no installation)
   python3 web/webtech_fingerprint.py https://target.example.com
@@ -182,10 +185,24 @@ Web recon helpers.
 
   By default each target gets up to 25s (25000 ms) to fire its initial page-load event before the navigation times out. Use `--timeout <ms>` to change that — raise it for slow SPAs or high-latency targets (e.g. `--timeout 60000`), or pass `--timeout 0` to wait indefinitely. This only bounds the initial navigation; the fixed post-load settle wait and the resource/EOL fetch timeouts are unaffected.
 
-  For a `-f/--targets-file` run, each target prints a `[i/N] >> Scanning <url>` progress line before its (otherwise silent) crawl, so you can see which target is in-flight and how far through the list the run is. The line is colorized on an interactive terminal (auto-disabled off a TTY, when `NO_COLOR` is set, or with `--no-color`; the saved transcript is always plain text). Press `Ctrl-C` once to stop gracefully — it finishes the target currently being crawled, saves its results, then stops before the next one (a second `Ctrl-C` force-quits). An interrupted run (graceful stop or an unexpected crash) leaves a `webtech_fingerprint_progress.json` plus the loose per-host files in the output directory instead of the usual single zip; re-run the same command with `--resume` to skip the finished targets, crawl only what's left, and bundle the earlier and new results into one final zip:
+  A `-f/--targets-file` run scans **5 targets at once by default**; change this with `--threads N` (short `-t`). Each worker thread drives its own headless browser, so `N` is roughly the peak browser count — raise it for a large scope on a beefy host, lower it or use `1` to go easy on memory or a fragile target. This only applies to `-f`; single-URL/`-r`/`--enrich` are always one target. With more than one target in flight, the full per-target reports would interleave into noise, so the screen instead shows a compact one-line-per-host feed printed as each host finishes (out of order):
+  ```
+  [ 1/20] done  https://web01.corp.local   PHP 8.1.2, nginx 1.18.0
+  [ 3/20] FAIL  https://web03.corp.local   timeout
+  [ 2/20] done  https://web02.corp.local   no components detected
+  ```
+  The full reports aren't lost — they're still written to the per-host `.json`/`.txt` files and into the saved transcript (so the downstream analysis parser is unaffected), and the usual `SUMMARY` tables still print at the end. `--threads 1` keeps the original inline full-report output with the `[i/N] >> Scanning <url>` pre-crawl line. These markers are colorized on an interactive terminal (auto-disabled off a TTY, when `NO_COLOR` is set, or with `--no-color`; the saved transcript is always plain text).
+
+  Press `Ctrl-C` once to stop gracefully — it stops launching new targets, lets the in-flight ones finish and save, then stops (a second `Ctrl-C` force-quits, leaving the saved progress for `--resume`). An interrupted run (graceful stop or an unexpected crash) leaves a `webtech_fingerprint_progress.json` plus the loose per-host files in the output directory instead of the usual single zip; re-run the same command with `--resume` to skip the finished targets, crawl only what's left, and bundle the earlier and new results into one final zip:
   ```bash
   aux-webtech -f targets.txt -o results/            # Ctrl-C partway through...
   aux-webtech -f targets.txt -o results/ --resume   # ...continues where it left off
+  ```
+
+  To sweep a scope for a specific technology — e.g. "which hosts run PHP?" to find where to patch a fresh advisory — add `--match TECH`. It's a case-insensitive substring match on the detected tech name across libraries, server components, and cookie fingerprints; after the run it prints a `=== MATCHED: <tech> (N hosts) ===` list of the matching hosts with their detected version (or `version unknown` for a presence-only hit such as a `PHPSESSID` cookie). `--match` is repeatable and comma-separated (`--match php,apache --match jquery`), producing one list per term. Add `--match-only` to drop non-matching hosts from the feed and skip writing their files entirely — handy when you only care about the hits. Note: server-component matches (e.g. the `PHP/8.1.2` in an `X-Powered-By` header) depend on the endoflife lookup, so don't combine a server-tech match with `--no-eol`.
+  ```bash
+  aux-webtech -f scope.txt -o results/ --match php             # list every host running PHP
+  aux-webtech -f scope.txt -o results/ --match php --match-only # ...and only those hosts
   ```
 
 ---
