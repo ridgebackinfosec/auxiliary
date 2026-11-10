@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-11-10
+
+### Changed
+- `pivot/reverse_ssh_tunnel.py`: clearer `--help`. The top-level help now opens with a LEGEND
+  mapping the `[internal]`/`[remote]`/`[operator]` tags to the three systems, lists subcommands
+  in true workflow order (`keygen → recv-key → send-key → install-key → tunnel → verify → check`,
+  with `preflight`/`diagram` as any-time helpers), and adds a copy-paste QUICK START walkthrough.
+  Each subcommand's help gained a "when to run this" cue and a concrete `Example:` invocation.
+  Help text only -- no behavior or dependency changes.
+
 ## [1.8.2] - 2026-10-26
 
 ### Fixed
