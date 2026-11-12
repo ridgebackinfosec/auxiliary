@@ -1,6 +1,6 @@
 # Only web/webtech_fingerprint.py requires external packages; every other
 # tool in this repository uses the Python standard library only.
-requests>=2.31
+requests>=2.34.2
 beautifulsoup4>=4.12
 playwright>=1.40
 #
