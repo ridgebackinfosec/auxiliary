@@ -4,6 +4,7 @@
 These never shell out to a real ssh; only command-string builders, parsers,
 validators, and the HMAC helpers are exercised.
 """
+import os
 import unittest
 from pathlib import Path
 
@@ -145,14 +146,28 @@ class ChooseIdentityTests(unittest.TestCase):
     SSH = Path("/home/u/.ssh")
 
     def _exists(self, present):
-        present = set(present)
-        return lambda p: p in present
+        """A fake exists() predicate over a fixed set of paths.
+
+        choose_identity() normalizes every candidate through Path before calling
+        this, so the set has to be normalized the same way. str(Path("/a/b")) is
+        a backslash path on Windows, and comparing it against the POSIX spelling
+        makes a key that IS present look missing.
+        """
+        present = {str(Path(p)) for p in present}
+        return lambda p: str(Path(p)) in present
+
+    @staticmethod
+    def _abs(p):
+        """What choose_identity() returns for a key it found: an absolute path
+        in the host's own spelling (os.path.abspath adds a drive on Windows)."""
+        return os.path.abspath(str(Path(p)))
 
     def test_default_present(self):
+        key = self.SSH / "reverse_tunnel"
         path, err = rt.choose_identity(
-            None, "reverse_tunnel", self.SSH, self._exists(["/home/u/.ssh/reverse_tunnel"]))
+            None, "reverse_tunnel", self.SSH, self._exists([key]))
         self.assertIsNone(err)
-        self.assertEqual(path, "/home/u/.ssh/reverse_tunnel")
+        self.assertEqual(path, self._abs(key))
 
     def test_default_absent_errors_with_keygen_hint(self):
         path, err = rt.choose_identity(
@@ -164,7 +179,7 @@ class ChooseIdentityTests(unittest.TestCase):
         path, err = rt.choose_identity(
             "/abs/key", "reverse_tunnel", self.SSH, self._exists(["/abs/key"]))
         self.assertIsNone(err)
-        self.assertEqual(path, "/abs/key")
+        self.assertEqual(path, self._abs("/abs/key"))
 
     def test_explicit_abs_absent_errors(self):
         path, err = rt.choose_identity(
@@ -174,18 +189,18 @@ class ChooseIdentityTests(unittest.TestCase):
 
     def test_bare_name_resolves_from_ssh_dir_not_pwd(self):
         # `-i reverse_tunnel` with the key only in ~/.ssh must resolve there, not pwd.
+        key = self.SSH / "reverse_tunnel"
         path, err = rt.choose_identity(
-            "reverse_tunnel", "reverse_tunnel", self.SSH,
-            self._exists(["/home/u/.ssh/reverse_tunnel"]))
+            "reverse_tunnel", "reverse_tunnel", self.SSH, self._exists([key]))
         self.assertIsNone(err)
-        self.assertEqual(path, "/home/u/.ssh/reverse_tunnel")
+        self.assertEqual(path, self._abs(key))
 
     def test_tilde_is_expanded(self):
         home = str(Path("~/mykey").expanduser())
         path, err = rt.choose_identity(
             "~/mykey", "reverse_tunnel", self.SSH, self._exists([home]))
         self.assertIsNone(err)
-        self.assertEqual(path, home)
+        self.assertEqual(path, self._abs(home))
 
 
 class ArgParseTests(unittest.TestCase):
