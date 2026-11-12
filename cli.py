@@ -82,7 +82,7 @@ def print_help() -> None:
     print("  auxiliary webtech https://target.example.com")
     print("  auxiliary split-lines --input targets --lines 1000")
     print("  auxiliary split-creds --glob 'creds-*.txt' --dedupe-users")
-    print("  auxiliary iptables --ranges-file ranges.txt --apply")
+    print("  auxiliary iptables --targets-file all-blocks.txt --apply")
     print("  auxiliary nessus-rules --input out-of-scope.txt --apply")
     print("  auxiliary reverse-ssh diagram")
     print()

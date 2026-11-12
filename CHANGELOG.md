@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-12
+
+### Changed
+- Documentation restructured. The top-level `README.md` is now a lean index: intro, install,
+  unified-CLI usage, and a one-line-plus-example catalog of all 11 tools grouped by folder, each
+  heading linking to a per-folder README. Full per-tool detail (options, examples, caveats, both
+  invocation styles) moved into a `README.md` in each folder: `dns/`, `network/`, `web/`,
+  `files/`, `firewall/`, `nessus/`, and `pivot/`. The deep tools (`webtech_fingerprint`,
+  `reverse_ssh_tunnel`) now have room to be documented in full in `web/README.md` and
+  `pivot/README.md`. `web/README.md` also documents `webtech`'s previously-undocumented
+  `-r/--request-file` authenticated-crawl flag.
+
+### Fixed
+- `cli.py`: the `auxiliary --help` example for the iptables tool showed a non-existent
+  `--ranges-file` flag; corrected to the real `--targets-file`. The same stale flag in the
+  README is fixed by the doc restructure above. Help/text only -- no behavior changes.
+
 ## [1.8.4] - 2026-11-12
 
 ### Changed
