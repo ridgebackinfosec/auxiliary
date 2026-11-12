@@ -143,11 +143,9 @@ With more than one target in flight, the full per-target reports would
 interleave into noise, so the screen shows a compact one-line-per-host feed
 printed as each host finishes (out of order):
 
-```
-[ 1/20] done  https://web01.corp.local   PHP 8.1.2, nginx 1.18.0
-[ 3/20] FAIL  https://web03.corp.local   timeout
-[ 2/20] done  https://web02.corp.local   no components detected
-```
+<!-- BEGIN GENERATED: webtech-live-feed -->
+<img src="../docs/images/examples/webtech-live-feed.svg" alt="The webtech concurrent scan feed: green 'done' and red 'FAIL' per host">
+<!-- END GENERATED: webtech-live-feed -->
 
 The full reports aren't lost — they're still written to the per-host
 `.json`/`.txt` files and into the saved transcript. `--threads 1` keeps the
@@ -186,6 +184,18 @@ hosts from the feed and skip writing their files entirely.
 aux-webtech -f scope.txt -o results/ --match php             # list every host running PHP
 aux-webtech -f scope.txt -o results/ --match php --match-only # ...and only those hosts
 ```
+
+The matched list is printed at the end of the run as a Host/Version table:
+
+<!-- BEGIN GENERATED: webtech-matched -->
+```text
+=== MATCHED: php (2 hosts) ===
+  Host              Version   
+  ----------------  ----------
+  web01.corp.local  PHP 8.1.2 
+  web02.corp.local  PHP 7.4.33
+```
+<!-- END GENERATED: webtech-matched -->
 
 > **Note:** server-component matches (e.g. the `PHP/8.1.2` in an `X-Powered-By`
 > header) depend on the endoflife lookup, so don't combine a server-tech match

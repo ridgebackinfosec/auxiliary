@@ -35,6 +35,31 @@ crosses the network** — only the public key is transferred.
 Visualize it: `auxiliary reverse-ssh diagram` (prints Mermaid; add `--sequence`
 for the setup steps). Paste the output into GitHub or https://mermaid.live.
 
+<!-- BEGIN GENERATED: reverse-ssh-diagram -->
+```mermaid
+flowchart LR
+    subgraph OP[Operator host]
+        A[you: proxychains / ssh -L]
+    end
+    subgraph RM[Remote redirector - internet-facing]
+        S[sshd]
+        P[SOCKS proxy 127.0.0.1:9050]
+    end
+    subgraph INT[Internal sender - target network]
+        C[ssh client -N -R]
+    end
+    subgraph TGT[Internal targets]
+        T[hosts / services]
+    end
+    A -- existing SSH --> S
+    C == outbound reverse SSH ==> S
+    S -. opens .-> P
+    A -- via SOCKS --> P
+    P == tunnelled back over reverse SSH ==> C
+    C --> T
+```
+<!-- END GENERATED: reverse-ssh-diagram -->
+
 ## Subcommands
 
 Every subcommand is tagged with the system it runs on:

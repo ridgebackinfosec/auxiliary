@@ -43,7 +43,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        pip install -e ".[dev,docs]"
 
     # The suite never launches a browser, so playwright's browser binaries are
     # deliberately not installed here -- only the Python package, which the
@@ -73,7 +73,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        pip install -e ".[dev,docs]"
 
     # Soft gate: the tree has never been black-formatted. Measured at the time
     # this was added, 14 of 22 files would be reformatted (195 over-length lines
@@ -81,7 +81,7 @@ jobs:
     # run regardless of the change under test. This becomes a hard gate -- drop
     # the continue-on-error line -- once a one-time `black .` reformat has landed.
     - name: Check formatting
-      run: black --check cli.py dns/ network/ web/ files/ firewall/ nessus/ pivot/ tests/
+      run: black --check cli.py dns/ network/ web/ files/ firewall/ nessus/ pivot/ tests/ scripts/
       continue-on-error: true
 
     # Soft gate: 5 pre-existing errors at the time this was added, all triaged as
@@ -127,6 +127,15 @@ jobs:
     - name: Test imports
       run: |
         python -c "import cli, web.webtech_fingerprint, pivot.reverse_ssh_tunnel; print('imports ok')"
+
+    # Rich is a docs-only extra used by scripts/generate_doc_examples.py. A dev
+    # extra that quietly leaks into runtime deps is exactly the kind of thing
+    # nobody notices until a user in a constrained environment reports it, so
+    # this is a hard gate: the wheel must not drag Rich in.
+    - name: Assert docs-only deps did not leak into the wheel
+      run: |
+        python -c "import importlib.util, sys; sys.exit(1 if importlib.util.find_spec('rich') else 0)"
+        echo "✓ rich is not installed alongside the wheel"
 
     # pyproject.toml is the single source of version truth; this asserts the
     # installed artifact actually carries that version.

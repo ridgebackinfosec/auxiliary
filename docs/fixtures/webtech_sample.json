@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "FABRICATED sample data for the generated documentation examples.",
+    "These hosts, versions and findings are invented illustrations -- they are",
+    "not captured from any real engagement, and must never be replaced with",
+    "real target data. scripts/generate_doc_examples.py feeds this through the",
+    "program's real renderers so the README shows exactly what an operator sees.",
+    "Because the values here are already placeholders, there is nothing to mask",
+    "at render time -- the input IS the masked data."
+  ],
+  "match_term": "php",
+  "total": 20,
+  "hosts": [
+    {
+      "index": 1,
+      "host": "web01.corp.local",
+      "url": "https://web01.corp.local",
+      "ok": true,
+      "detail": "PHP 8.1.2, nginx 1.18.0",
+      "components": [
+        { "name": "PHP", "version": "8.1.2" },
+        { "name": "nginx", "version": "1.18.0" }
+      ]
+    },
+    {
+      "index": 3,
+      "host": "web03.corp.local",
+      "url": "https://web03.corp.local",
+      "ok": false,
+      "detail": "timeout",
+      "components": []
+    },
+    {
+      "index": 2,
+      "host": "web02.corp.local",
+      "url": "https://web02.corp.local",
+      "ok": true,
+      "detail": "PHP 7.4.33, Apache 2.4.52",
+      "components": [
+        { "name": "PHP", "version": "7.4.33" },
+        { "name": "Apache", "version": "2.4.52" }
+      ]
+    }
+  ]
+}
