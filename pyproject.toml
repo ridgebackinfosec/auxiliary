@@ -28,7 +28,7 @@ classifiers = [
 # webtech_fingerprint (web/) requires requests, beautifulsoup4, and
 # playwright; every other tool remains Python stdlib-only.
 dependencies = [
-    "requests>=2.31",
+    "requests>=2.34.2",
     "beautifulsoup4>=4.12",
     "playwright>=1.40",
 ]
