@@ -19,9 +19,9 @@ branch.
 
 - **`bcp`** — "bump, commit, push". When the user says `bcp`, do these in order
   and **stop at the first failure**:
-  1. **Regenerate docs.** This repo currently has no doc generator and no
-     generated-content markers, so say that this step was skipped rather than
-     implying it ran.
+  1. **Regenerate docs.** Run `python scripts/generate_doc_examples.py`. A
+     dirty tree afterwards means the docs were about to ship stale -- commit the
+     regenerated output *with* the change, never revert it.
   2. **Run the full suite**: `pytest`. Report real output; never summarize a red
      suite as green.
   3. **Bump the version** in `pyproject.toml` (the single source of version
@@ -51,6 +51,19 @@ branch.
 - Tests run under `pytest` (configured in `pyproject.toml`; `testpaths = tests`,
   `pythonpath = ["."]`). The suite is written with `unittest.TestCase`, so
   `python -m unittest discover -s tests` also works and is a useful cross-check.
+- **Never hand-edit between `<!-- BEGIN GENERATED: name -->` and
+  `<!-- END GENERATED: name -->`.** Those regions are owned by
+  `scripts/generate_doc_examples.py`; change the renderer or the capture
+  function and re-run it. Prose and captions around the markers are hand-owned
+  and safe to edit. The examples are captured from the real renderers
+  (`cli.print_help()`, `format_compact_line()`, `format_matched_section()`,
+  `build_diagram()`) using the sample data in `docs/fixtures/`, never from real
+  engagement data. `tests/test_doc_examples.py` fails when they go stale, and
+  also when a flag documented in a folder README no longer exists in that
+  tool's `--help`.
+- Rich is a **docs-only** extra (`pip install -e ".[docs]"`), imported only from
+  `scripts/` and `tests/`. Never add it to `[project.dependencies]` or
+  `requirements.txt`; the `test-package` CI job fails if it reaches the wheel.
 - Every code change updates the docs it invalidates in the same change:
   docstrings, the top-level `README.md` index, and the per-folder `README.md`
   for the tool you touched (`dns/`, `network/`, `web/`, `files/`, `firewall/`,

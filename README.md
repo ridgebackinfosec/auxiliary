@@ -55,6 +55,51 @@ auxiliary --version           # show the installed version
 auxiliary <tool> --help       # help for a specific tool
 ```
 
+<details>
+<summary><code>auxiliary --help</code></summary>
+
+<!-- BEGIN GENERATED: cli-help -->
+```text
+auxiliary - Ridgeback InfoSec security utilities
+
+Usage:
+  auxiliary <tool> [args...]
+  auxiliary --list
+  auxiliary --help
+  auxiliary --version
+
+Available tools:
+  extract-ips     - Extract and sort valid IPv4 addresses from files
+  find-dc         - Discover Windows Domain Controllers via SRV lookups
+  gobuster        - Convert Gobuster output to EyeWitness URLs
+  iptables        - Manage iptables OUTPUT DROP rules
+  masscan         - Parse masscan output to extract target IPs
+  nessus-rules    - Add out-of-scope systems to nessusd.rules file
+  reverse-dns     - Perform reverse DNS lookups on IP lists
+  reverse-ssh     - Set up/establish/test a reverse SSH tunnel + SOCKS pivot
+  split-creds     - Split credential dumps into user/password files
+  split-lines     - Split files into fixed-line batches
+  webtech         - Wappalyzer-style tech/version fingerprinter for web apps
+
+Examples:
+  auxiliary find-dc --domain example.corp
+  auxiliary reverse-dns --input ips.txt --output hostnames.txt
+  auxiliary extract-ips --input ~/chaos --output ~/order
+  auxiliary masscan masscan_output --output targets
+  auxiliary gobuster gobuster.txt http://example.com urls.txt
+  auxiliary webtech https://target.example.com
+  auxiliary split-lines --input targets --lines 1000
+  auxiliary split-creds --glob 'creds-*.txt' --dedupe-users
+  auxiliary iptables --targets-file all-blocks.txt --apply
+  auxiliary nessus-rules --input out-of-scope.txt --apply
+  auxiliary reverse-ssh diagram
+
+For tool-specific help, run: auxiliary <tool> --help
+```
+<!-- END GENERATED: cli-help -->
+
+</details>
+
 **Individual commands** — each tool is also a standalone `aux-` command:
 ```bash
 aux-find-dc --domain example.corp

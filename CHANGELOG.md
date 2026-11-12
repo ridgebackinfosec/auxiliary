@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-11-12
+
+### Added
+- Documentation examples are now captured from the code that renders them, by
+  `scripts/generate_doc_examples.py`. Four screens are generated into the READMEs
+  between `<!-- BEGIN GENERATED: ... -->` markers: the webtech concurrent scan feed
+  (as a colour SVG, since its green `done`/red `FAIL` is the signal an operator
+  reads), the `--match` triage table, `auxiliary --help`, and the reverse-SSH
+  Mermaid diagram. Regenerate with `python scripts/generate_doc_examples.py`; do
+  not hand-edit between the markers.
+- `tests/test_doc_examples.py` fails when a generated example goes stale, and
+  separately when a flag documented in a folder README no longer exists in that
+  tool's `--help`. The latter guards 77 documented flags plus the pivot tool's
+  nine subcommands -- the class of defect that left a `--ranges-file` flag in the
+  docs until 1.9.0.
+- A `docs` extra (`pip install -e ".[docs]"`) providing Rich, used only by the
+  generator and its test. Rich is **not** a runtime dependency: no shipped module
+  imports it, and the packaging CI job now fails the build if it reaches the wheel.
+
+### Changed
+- The hand-written example of the concurrent scan feed in `web/README.md` is
+  replaced by generated output, so it can no longer drift from
+  `format_compact_line()`. The surrounding prose is unchanged.
+
 ## [1.10.0] - 2026-11-12
 
 ### Added

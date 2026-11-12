@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auxiliary"
-version = "1.10.0"
+version = "1.10.1"
 description = "Collection of Python utilities for reconnaissance and security research"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -42,6 +42,14 @@ dev = [
     "mypy>=1.8",
 ]
 
+# Docs tooling ONLY -- used by scripts/generate_doc_examples.py and its drift
+# test to render captured terminal output as SVG. Deliberately kept out of
+# [project.dependencies] and requirements.txt: no shipped module imports Rich,
+# and test.yml's test-package job fails the build if it ever reaches the wheel.
+docs = [
+    "rich>=13",
+]
+
 [project.urls]
 Homepage = "https://github.com/ridgebackinfosec/auxiliary"
 Repository = "https://github.com/ridgebackinfosec/auxiliary"
@@ -74,3 +82,7 @@ testpaths = ["tests"]
 # them as `from web import webtech_fingerprint`. pythonpath puts the repo root on
 # sys.path so collection works no matter which directory pytest is invoked from.
 pythonpath = ["."]
+markers = [
+    "slow: tests that shell out or take noticeably longer than a unit test",
+    "integration: tests that exercise several components together",
+]
