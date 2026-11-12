@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-12
+
+### Added
+- `auxiliary --version` (also `-V`) reports the installed version, read from the
+  installed distribution metadata via `importlib.metadata`. Note this reflects what
+  is *installed*, so an editable checkout whose `pip install -e .` predates the
+  latest bump will report the older number until reinstalled.
+
+### Changed
+- **Release process now runs on a `develop` branch.** Work lands on `develop`;
+  `main` is the release branch, and merging `develop` into `main` with a version
+  bump is what triggers a release. Nothing changes for users of the tools, but
+  anyone contributing should branch from `develop`, not `main`. `CLAUDE.md` has been
+  rewritten accordingly -- it previously described this repo as trunk-based.
+- Tests now run under `pytest` (`pip install -e ".[dev]"` to get the toolchain).
+  The suite is still written with `unittest.TestCase`, so
+  `python -m unittest discover -s tests` continues to work unchanged.
+- CI now gates the suite, linting, packaging, and security scanning on every push
+  and pull request to `main` and `develop`; previously nothing but the release job
+  ran. Added `.github/workflows/test.yml` (Python 3.9-3.13 on Linux, 3.11/3.13 on
+  Windows and macOS), `.github/workflows/security.yml` (bandit, pip-audit, CodeQL),
+  and `.github/dependabot.yml`.
+
+### Fixed
+- **Releases v1.6.2 through v1.9.0 were never published by CI.** `release.yml`
+  carried a gate requiring the version in `pyproject.toml` to match a `__version__`
+  constant in a repo-root `__init__.py`. That constant was last updated at v1.6.1,
+  so every version bump after it failed the release job -- nine consecutive runs,
+  producing no tag and no release notes. The GitHub releases that exist for those
+  versions were created by hand and carry auto-generated "Full Changelog" bodies
+  rather than the CHANGELOG prose; v1.8.3 has no release at all. These are left as
+  they are; the fix applies from the next release onward.
+  The duplicated constant was the root cause and is now gone: the root
+  `__init__.py` has been deleted (it was never included in `packages`/`py-modules`,
+  so it never shipped and `import auxiliary` always failed), the gate has been
+  removed, and `pyproject.toml` is the only place a version appears.
+- `release.yml` now rejects a non-semver version and requires the CHANGELOG
+  heading for the version being released to carry its `- YYYY-MM-DD` date. The
+  previous inline `awk` extractor matched an undated `## [X.Y.Z]` heading, so a
+  release could ship with the date missing. Release notes now come from
+  `scripts/extract_changelog.py`, and the sdist and wheel are attached to the
+  release.
+
 ## [1.9.0] - 2026-11-12
 
 ### Changed
