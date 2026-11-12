@@ -30,7 +30,7 @@ classifiers = [
 dependencies = [
     "requests>=2.31",
     "beautifulsoup4>=4.12",
-    "playwright>=1.40",
+    "playwright>=1.64.1",
 ]
 
 # Dev/test toolchain. Installed with: pip install -e ".[dev]"
