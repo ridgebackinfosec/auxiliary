@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auxiliary"
-version = "1.9.0"
+version = "1.10.0"
 description = "Collection of Python utilities for reconnaissance and security research"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -33,6 +33,15 @@ dependencies = [
     "playwright>=1.40",
 ]
 
+# Dev/test toolchain. Installed with: pip install -e ".[dev]"
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=24.0",
+    "mypy>=1.8",
+]
+
 [project.urls]
 Homepage = "https://github.com/ridgebackinfosec/auxiliary"
 Repository = "https://github.com/ridgebackinfosec/auxiliary"
@@ -58,3 +67,10 @@ aux-reverse-ssh = "pivot.reverse_ssh_tunnel:main"
 # Include all Python packages and modules in the current directory
 packages = ["dns", "network", "web", "files", "firewall", "nessus", "pivot"]
 py-modules = ["cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The tools live in top-level packages (web/, pivot/, ...) and the tests import
+# them as `from web import webtech_fingerprint`. pythonpath puts the repo root on
+# sys.path so collection works no matter which directory pytest is invoked from.
+pythonpath = ["."]

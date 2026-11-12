@@ -3,12 +3,19 @@ name: Release
 # Cut a tag + GitHub Release automatically whenever the version in
 # pyproject.toml changes on main. Release notes come from the matching
 # section of CHANGELOG.md.
+#
+# Work lands on develop; main is the release branch. Merging develop -> main
+# with a version bump is what triggers a release.
 
 on:
   push:
     branches: [main]
     paths:
       - pyproject.toml
+  # Secondary, manual path only -- the push-on-version-change trigger above is
+  # the primary one. Kept as an escape hatch: the "tag already exists" guard
+  # below makes a manual re-run idempotent, which is what lets a release be
+  # recovered after a failed run without hand-crafting tags.
   workflow_dispatch:
 
 permissions:
@@ -21,12 +28,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # Full history (not depth 2): the tag-exists guard below needs to see
+          # every existing tag, not just the previous commit.
           fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Read version from pyproject.toml
         id: version
         run: |
-          VERSION=$(grep -m1 '^version' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           if [ -z "$VERSION" ]; then
             echo "::error::Could not parse version from pyproject.toml"
             exit 1
@@ -34,14 +48,14 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected version: $VERSION"
 
-      - name: Verify __init__.py version matches
+      - name: Validate version format
         run: |
           VERSION='${{ steps.version.outputs.version }}'
-          INIT_VERSION=$(grep -m1 '__version__' __init__.py | sed -E 's/.*"([^"]+)".*/\1/')
-          if [ "$VERSION" != "$INIT_VERSION" ]; then
-            echo "::error::Version mismatch: pyproject.toml=$VERSION but __init__.py=$INIT_VERSION. Bump both before releasing."
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Version '$VERSION' is not plain semver (X.Y.Z). No 'v' prefix, no pre-release suffix."
             exit 1
           fi
+          echo "✓ Version format valid: $VERSION"
 
       - name: Skip if tag already exists
         id: guard
@@ -57,21 +71,21 @@ jobs:
       - name: Extract release notes from CHANGELOG.md
         if: steps.guard.outputs.skip == 'false'
         run: |
-          VERSION='${{ steps.version.outputs.version }}'
-          # Print the body between "## [VERSION]" and the next "## [" heading.
-          awk -v ver="$VERSION" '
-            $0 ~ "^## \\[" ver "\\]" { grab=1; next }
-            grab && /^## \[/ { exit }
-            grab { print }
-          ' CHANGELOG.md > notes.md
-          # Trim leading/trailing blank lines.
-          sed -i -e '/./,$!d' notes.md
-          if [ ! -s notes.md ]; then
-            echo "::error::No CHANGELOG.md section found for version $VERSION. Add a '## [$VERSION]' entry before releasing."
-            exit 1
-          fi
+          python scripts/extract_changelog.py '${{ steps.version.outputs.version }}'
           echo "----- release notes -----"
-          cat notes.md
+          cat release_notes.md
+
+      - name: Install build dependencies
+        if: steps.guard.outputs.skip == 'false'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Build distribution
+        if: steps.guard.outputs.skip == 'false'
+        run: |
+          python -m build
+          ls -lh dist/
 
       - name: Create tag and GitHub Release
         if: steps.guard.outputs.skip == 'false'
@@ -79,5 +93,32 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
-          body_path: notes.md
+          body_path: release_notes.md
           make_latest: true
+          files: dist/*
+
+      - name: Summary
+        if: steps.guard.outputs.skip == 'false'
+        run: |
+          VERSION='${{ steps.version.outputs.version }}'
+          {
+            echo "## Release Summary"
+            echo ""
+            echo "✅ Released **v$VERSION**"
+            echo ""
+            echo "- **Tag**: v$VERSION"
+            echo "- **Release URL**: https://github.com/${{ github.repository }}/releases/tag/v$VERSION"
+            echo ""
+            echo "### Artifacts Published"
+            echo ""
+            for file in dist/*; do echo "- $(basename "$file")"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: No release needed
+        if: steps.guard.outputs.skip == 'true'
+        run: |
+          {
+            echo "## No Release Created"
+            echo ""
+            echo "Tag v${{ steps.version.outputs.version }} already exists. No release created."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    # NOT main -- everything lands on develop first. A PR opened against main
+    # would bypass the develop -> main flow and could trip the release job.
+    target-branch: "develop"
+    schedule:
+      interval: "monthly"
+    # Batch the dev/test toolchain into one PR; the runtime deps (requests,
+    # beautifulsoup4, playwright) stay individual so each can be reviewed and
+    # smoke-tested on its own -- a playwright bump in particular can change
+    # browser behavior that webtech_fingerprint depends on.
+    groups:
+      dev-tooling:
+        patterns:
+          - "pytest"
+          - "pytest-*"
+          - "black"
+          - "mypy"
+          - "types-*"

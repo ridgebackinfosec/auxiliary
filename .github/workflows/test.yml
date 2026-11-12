@@ -1,0 +1,151 @@
+name: Tests
+
+# Runs on develop as well as main, so develop is gated before the release PR
+# is ever opened.
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # pyproject declares requires-python >=3.8, so the Linux column covers the
+      # whole claimed range from 3.9 up. 3.8 is omitted: it is EOL and no longer
+      # available on ubuntu-latest runners. Windows/macOS get the ends of the
+      # range only -- the tools are pure-Python, so the OS-specific risk is in
+      # path handling, which 3.11 and 3.13 exercise just as well as every cell.
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: windows-latest
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.13"
+          - os: macos-latest
+            python-version: "3.11"
+          - os: macos-latest
+            python-version: "3.13"
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    # The suite never launches a browser, so playwright's browser binaries are
+    # deliberately not installed here -- only the Python package, which the
+    # tests import.
+    - name: Run tests
+      run: >-
+        pytest
+        --cov=cli --cov=dns --cov=network --cov=web
+        --cov=files --cov=firewall --cov=nessus --cov=pivot
+        --cov-report=xml --cov-report=term-missing -v
+
+    - name: Archive test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-${{ matrix.os }}-${{ matrix.python-version }}
+        path: coverage.xml
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: 'pip'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    # Soft gate: the tree has never been black-formatted. Measured at the time
+    # this was added, 14 of 22 files would be reformatted (195 over-length lines
+    # in web/webtech_fingerprint.py alone), so a hard gate would be red on every
+    # run regardless of the change under test. This becomes a hard gate -- drop
+    # the continue-on-error line -- once a one-time `black .` reformat has landed.
+    - name: Check formatting
+      run: black --check cli.py dns/ network/ web/ files/ firewall/ nessus/ pivot/ tests/
+      continue-on-error: true
+
+    # Soft gate: 5 pre-existing errors at the time this was added, all triaged as
+    # benign -- e.g. find_domain_controllers.py:356 is the standard
+    # `not (i in seen or seen.add(i))` order-preserving dedupe, which is correct
+    # but trips func-returns-value. This becomes a hard gate once those 5 are
+    # annotated or silenced and the count reaches zero.
+    - name: Type check
+      run: mypy cli.py dns/ network/ web/ files/ firewall/ nessus/ pivot/ --ignore-missing-imports
+      continue-on-error: true
+
+  test-package:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: 'pip'
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build
+    - name: Build package
+      run: python -m build
+
+    # This job exists because packaging config silently omits subpackages and
+    # data files; only an install-from-artifact catches it. This repo ships seven
+    # top-level packages plus the cli module rather than one package, so each
+    # has to be checked for explicitly.
+    - name: Inspect package contents
+      run: |
+        for mod in cli.py dns/find_domain_controllers.py network/chaos_ip_extract.py \
+                   web/webtech_fingerprint.py files/split_lines.py \
+                   firewall/apply_iptables_blocks.py nessus/add_out_of_scope.py \
+                   pivot/reverse_ssh_tunnel.py; do
+          unzip -l dist/*.whl | grep -q "$mod" \
+            || (echo "ERROR: $mod missing from wheel!" && exit 1)
+          echo "✓ $mod"
+        done
+    - name: Install from wheel
+      run: pip install dist/*.whl
+    - name: Test imports
+      run: |
+        python -c "import cli, web.webtech_fingerprint, pivot.reverse_ssh_tunnel; print('imports ok')"
+
+    # pyproject.toml is the single source of version truth; this asserts the
+    # installed artifact actually carries that version.
+    - name: Check installed version matches pyproject
+      run: |
+        EXPECTED=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+        INSTALLED=$(python -c "import importlib.metadata as m; print(m.version('auxiliary'))")
+        if [ "$EXPECTED" != "$INSTALLED" ]; then
+          echo "ERROR: pyproject=$EXPECTED but installed=$INSTALLED"
+          exit 1
+        fi
+        echo "✓ Version matches: $EXPECTED"
+    - name: Smoke test CLI
+      run: |
+        auxiliary --version
+        auxiliary --list
+        auxiliary --help
+    - name: Upload built packages
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-packages
+        path: dist/

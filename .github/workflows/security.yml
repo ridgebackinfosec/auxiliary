@@ -1,0 +1,80 @@
+name: Security Scanning
+
+# The weekly cron matters as much as the push triggers: a new advisory against a
+# pinned dependency surfaces without anyone having to commit.
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    - cron: '0 0 * * 1'   # Weekly, Monday 00:00 UTC
+
+jobs:
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - run: pip install bandit[toml]
+
+    # Soft gate: these tools shell out to ssh/iptables/masscan by design, so
+    # bandit flags subprocess use throughout (B404/B603/B607). The report is
+    # uploaded for review instead of blocking. This becomes a hard gate once the
+    # known-intentional findings are triaged into a bandit config.
+    - run: bandit -r cli.py dns/ network/ web/ files/ firewall/ nessus/ pivot/ -f json -o bandit-report.json
+      continue-on-error: true
+    - if: always()
+      run: bandit -r cli.py dns/ network/ web/ files/ firewall/ nessus/ pivot/ -f screen
+      continue-on-error: true
+    - if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: sast-report
+        path: bandit-report.json
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - run: pip install pip-audit
+
+    # Soft gate: an advisory against requests/beautifulsoup4/playwright is
+    # actionable but not always immediately fixable, and this must not block an
+    # unrelated change. Becomes a hard gate if a policy of "no known vulns on
+    # main" is adopted.
+    - run: pip-audit -r requirements.txt --format json --output pip-audit-report.json
+      continue-on-error: true
+    - if: always()
+      run: pip-audit -r requirements.txt
+      continue-on-error: true
+    - if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: dependency-audit-report
+        path: pip-audit-report.json
+
+  # Hard gate -- no continue-on-error. CodeQL's security-extended queries catch
+  # the injection/path-traversal classes that matter for tools taking untrusted
+  # target lists as input.
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+    - uses: github/codeql-action/init@v3
+      with:
+        languages: python
+        queries: security-extended
+    - uses: github/codeql-action/autobuild@v3
+    - uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:python"

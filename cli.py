@@ -6,8 +6,10 @@ Usage:
     auxiliary <tool> [args...]
     auxiliary --list
     auxiliary --help
+    auxiliary --version
 """
 import sys
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
 # Tool registry mapping command names to their modules and descriptions
 TOOLS = {
@@ -57,6 +59,18 @@ TOOLS = {
     }
 }
 
+def get_version() -> str:
+    """Return the installed package version.
+
+    pyproject.toml is the single source of version truth; this reads it back out
+    of the installed distribution metadata rather than duplicating the string.
+    """
+    try:
+        return _pkg_version('auxiliary')
+    except PackageNotFoundError:
+        # Running from a source checkout that was never pip-installed.
+        return 'unknown (not installed)'
+
 def print_help() -> None:
     """Display comprehensive help information about the CLI.
 
@@ -68,6 +82,7 @@ def print_help() -> None:
     print("  auxiliary <tool> [args...]")
     print("  auxiliary --list")
     print("  auxiliary --help")
+    print("  auxiliary --version")
     print()
     print("Available tools:")
     for name, info in sorted(TOOLS.items()):
@@ -100,7 +115,8 @@ def print_tools() -> None:
 def main() -> int:
     """Main entry point for the auxiliary CLI dispatcher.
 
-    Routes tool commands to their respective modules. Handles --help and --list flags.
+    Routes tool commands to their respective modules. Handles --help, --list, and
+    --version flags.
 
     Returns:
         Exit code: 0 for success, non-zero for errors
@@ -111,6 +127,10 @@ def main() -> int:
 
     if sys.argv[1] == '--list':
         print_tools()
+        return 0
+
+    if sys.argv[1] in ['-V', '--version']:
+        print(f"auxiliary {get_version()}")
         return 0
 
     tool_name = sys.argv[1]

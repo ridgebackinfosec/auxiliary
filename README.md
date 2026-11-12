@@ -27,8 +27,11 @@ pip install git+https://github.com/ridgebackinfosec/auxiliary.git
 ```bash
 git clone https://github.com/ridgebackinfosec/auxiliary.git
 cd auxiliary
-pip install -e .
+pip install -e ".[dev]"     # omit [dev] if you don't need the test toolchain
+pytest                      # 75 tests, no network or browser required
 ```
+
+Contributions branch from `develop`, not `main`; `main` is the release branch.
 
 ### Manual usage (without installation)
 ```bash
@@ -48,6 +51,7 @@ After installation you can use the tools two ways.
 auxiliary <tool> [args...]
 auxiliary --list              # show all available tools
 auxiliary --help              # show help information
+auxiliary --version           # show the installed version
 auxiliary <tool> --help       # help for a specific tool
 ```
 
