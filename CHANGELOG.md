@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.4] - 2026-11-12
+
+### Changed
+- `pivot/reverse_ssh_tunnel.py`: clearer help for the optional key-transfer hardening flags on
+  `send-key`/`recv-key`. The `--secret`, `--tls`, and `--tls-fingerprint` help strings now state
+  each flag's purpose and that `--secret`/`--tls` must be set on both hosts, and a shared
+  "SECURING THE TRANSFER (optional)" note in both subcommands' help explains the threat model
+  (a man-in-the-middle could substitute their own key for install-key to authorize) and when to
+  use each flag. Help text only -- no behavior or dependency changes.
+
 ## [1.8.3] - 2026-11-10
 
 ### Changed

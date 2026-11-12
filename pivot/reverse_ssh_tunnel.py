@@ -59,6 +59,19 @@ AUTH_NOTICE = (
     "every system involved."
 )
 
+# Shared epilog note for send-key / recv-key: the key transfer is plaintext and
+# unauthenticated by default; these optional flags harden it and must be paired
+# across both hosts.
+TRANSFER_SECURITY_NOTE = """\
+SECURING THE TRANSFER (optional):
+  By default this transfer is plaintext and unauthenticated. The key is public, but
+  a man-in-the-middle could substitute their own key -- which install-key would then
+  authorize. Always compare the send-key/recv-key fingerprints before install-key.
+  To harden the transfer (all optional):
+    --secret SECRET       same value on both sides; HMAC detects tampering.
+    --tls                 both sides; encrypts the channel (needs openssl on recv-key).
+    --tls-fingerprint FP  send-key only; pin the SHA256 recv-key prints to stop a MITM."""
+
 TOP_EPILOG = """\
 LEGEND - every subcommand is tagged with the system it runs on:
   [internal] = internal sender   - inside the target network, outbound-only; the SSH client.
@@ -869,7 +882,8 @@ def build_parser():
                         "pure-Python TCP socket (no nc needed). Run this on the remote "
                         "BEFORE send-key; it waits for one connection. Use --print for the "
                         "nc fallback.",
-                        epilog="Example:\n  auxiliary reverse-ssh recv-key --port 4444",
+                        epilog="Example:\n  auxiliary reverse-ssh recv-key --port 4444\n\n"
+                               + TRANSFER_SECURITY_NOTE,
                         formatter_class=raw)
     sp.add_argument("--port", type=int, default=DEFAULT_XFER_PORT,
                     help="Listener port (default: %d)" % DEFAULT_XFER_PORT)
@@ -877,8 +891,12 @@ def build_parser():
     sp.add_argument("--output", help="Where to write the key (default: /tmp/<name>.pub)")
     sp.add_argument("--name", default=DEFAULT_NAME,
                     help="Key basename for the default output (default: %s)" % DEFAULT_NAME)
-    sp.add_argument("--secret", help="Shared secret to verify the HMAC (reject on mismatch)")
-    sp.add_argument("--tls", action="store_true", help="Serve TLS (needs openssl for a cert)")
+    sp.add_argument("--secret", help="Require the sender to authenticate the key with this "
+                    "shared secret (HMAC); reject if it is missing or wrong. Use the SAME "
+                    "value on send-key --secret.")
+    sp.add_argument("--tls", action="store_true", help="Encrypt the transfer with TLS (makes "
+                    "an ephemeral self-signed cert; needs openssl) and print the cert SHA256 "
+                    "to pin. The sender must also pass --tls.")
     sp.add_argument("--timeout", type=float, default=300.0,
                     help="Seconds to wait for a connection (default: 300)")
     sp.add_argument("--print", action="store_true", help="Print the nc fallback and exit")
@@ -890,7 +908,8 @@ def build_parser():
                         "after recv-key is listening, then compare the printed fingerprint "
                         "with the remote's before install-key.",
                         epilog="Example:\n"
-                               "  auxiliary reverse-ssh send-key --host 198.51.100.10 --port 4444",
+                               "  auxiliary reverse-ssh send-key --host 198.51.100.10 --port 4444"
+                               "\n\n" + TRANSFER_SECURITY_NOTE,
                         formatter_class=raw)
     sp.add_argument("--host", required=True, help="Remote redirector host/IP")
     sp.add_argument("--port", type=int, default=DEFAULT_XFER_PORT,
@@ -898,9 +917,14 @@ def build_parser():
     sp.add_argument("--key", help="Path to the .pub (default: ~/.ssh/<name>.pub)")
     sp.add_argument("--name", default=DEFAULT_NAME,
                     help="Key basename for the default .pub (default: %s)" % DEFAULT_NAME)
-    sp.add_argument("--secret", help="Shared secret to HMAC-authenticate the transfer")
-    sp.add_argument("--tls", action="store_true", help="Encrypt the transfer with TLS")
-    sp.add_argument("--tls-fingerprint", help="Pin the listener's cert SHA256 (with --tls)")
+    sp.add_argument("--secret", help="Authenticate the key in transit with this shared "
+                    "secret (HMAC); must match recv-key --secret or the receiver rejects it.")
+    sp.add_argument("--tls", action="store_true", help="Encrypt the transfer with TLS; "
+                    "recv-key must also pass --tls. Add --tls-fingerprint to also stop a "
+                    "man-in-the-middle.")
+    sp.add_argument("--tls-fingerprint", help="Pin the TLS cert SHA256 that recv-key --tls "
+                    "printed; abort if it differs. Without it, --tls encrypts but does not "
+                    "detect a MITM.")
     sp.add_argument("--timeout", type=float, default=30.0, help="Socket timeout seconds")
     sp.set_defaults(func=cmd_send_key)
 
